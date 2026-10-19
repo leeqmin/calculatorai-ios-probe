@@ -1,0 +1,29 @@
+name: Native probe - manual unsigned build
+on:
+  workflow_dispatch:
+    inputs:
+      public_source_and_storage_reviewed:
+        description: 'I approved public source and verified free Actions artifact storage; no paid use'
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+jobs:
+  build:
+    if: github.event.repository.private == false && inputs.public_source_and_storage_reviewed == true
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Core checks and unsigned device build
+        run: bash build-macos.sh
+      - name: Short-lived unsigned test package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: CalculatorProbe-UNSIGNED-NOT-INSTALLABLE-DIRECTLY
+          path: build/CalculatorProbe-unsigned.ipa
+          retention-days: 1
+          if-no-files-found: error
