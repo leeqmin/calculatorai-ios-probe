@@ -11,7 +11,8 @@ import WebKit
     @Published var draft = ""
     @Published var keyboard = false
     @Published var settings = false
-    let connection = ChatGPTConnection()
+    // Ordinary calculator launch never needs account storage or authentication setup.
+    lazy var connection = ChatGPTConnection()
     private var sequence = HiddenSequence()
     private var snapshot: ScientificEngine?
     private var lastEquals: TimeInterval?

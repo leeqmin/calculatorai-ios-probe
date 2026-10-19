@@ -31,15 +31,21 @@ xcrun simctl boot "$DEVICE" || true
 xcrun simctl bootstatus "$DEVICE" -b
 xcrun simctl install "$DEVICE" build/Simulator/Build/Products/Debug-iphonesimulator/ScientificCalculator.app
 xcrun simctl launch "$DEVICE" org.local.scientificcalculator.personal --calculator-self-check
-sleep 5
 CONTAINER=$(xcrun simctl get_app_container "$DEVICE" org.local.scientificcalculator.personal data)
+for attempt in {1..30}; do
+  [[ -f "$CONTAINER/Documents/mock-app-checks.txt" ]] && break
+  sleep 2
+done
 cp "$CONTAINER/Documents/mock-app-checks.txt" build/mock-app-checks.txt
 cat build/mock-app-checks.txt
 grep -q '^PASS:' build/mock-app-checks.txt
 xcrun simctl io "$DEVICE" screenshot build/calculator-simulator.png
 xcrun simctl terminate "$DEVICE" org.local.scientificcalculator.personal
 xcrun simctl launch "$DEVICE" org.local.scientificcalculator.personal --calculator-render-check
-sleep 5
+for attempt in {1..30}; do
+  [[ -f "$CONTAINER/Documents/math-render-check.txt" ]] && break
+  sleep 2
+done
 cp "$CONTAINER/Documents/math-render-check.txt" build/math-render-check.txt
 cat build/math-render-check.txt
 grep -q '^PASS:' build/math-render-check.txt
