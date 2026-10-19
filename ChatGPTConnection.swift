@@ -156,7 +156,7 @@ final class OfficialTransport: @unchecked Sendable {
 
 @MainActor final class ChatGPTConnection: ObservableObject {
     @Published private(set) var accounts: [AccountRecord] = []
-    @Published var selectedID: String? { didSet { UserDefaults.standard.set(selectedID, forKey: "selected-account") } }
+    @Published var selectedID: String? { didSet { try? SecureStore.write(Data((selectedID ?? "").utf8), key: "selected-account") } }
     @Published private(set) var models: [ModelOption] = []
     @Published private(set) var status = "기기에서 실제 로그인·AI 요청 확인이 필요합니다."
     @Published private(set) var busy = false
@@ -175,7 +175,7 @@ final class OfficialTransport: @unchecked Sendable {
             if let data = try SecureStore.read("host"), let saved = String(data: data, encoding: .utf8) { host = saved }
             else { host = "urn:uuid:" + UUID().uuidString.lowercased(); try SecureStore.write(Data(host.utf8), key: "host") }
             if let saved = try SecureStore.read("accounts") { accounts = try JSONDecoder().decode([AccountRecord].self, from: saved) }
-            selectedID = UserDefaults.standard.string(forKey: "selected-account")
+            selectedID = try SecureStore.read("selected-account").flatMap { String(data: $0, encoding: .utf8) }
             if selected == nil { selectedID = accounts.first?.id }
         } catch { status = SafeFailure.keychain.message }
     }
@@ -216,7 +216,13 @@ final class OfficialTransport: @unchecked Sendable {
         let existing = asNewAccount ? nil : selected
         let loopback = LoopbackServer(); server = loopback
         background = UIApplication.shared.beginBackgroundTask(withName: "OfficialLogin") { [weak self] in
-            Task { @MainActor in self?.status = "로그인 중 계산기로 돌아온 후 다시 시도하세요. iOS가 대기를 종료했습니다."; self?.cancelLogin() }
+            Task { @MainActor in
+                guard let self else { return }
+                // End the OS lease on time. Do not pretend to have unlimited background execution.
+                // A pending callback can resume when the user manually returns to the app.
+                if self.background != .invalid { UIApplication.shared.endBackgroundTask(self.background); self.background = .invalid }
+                self.status = "Safari에서 승인을 완료했다면 계산기로 돌아오세요. iOS의 백그라운드 수신은 보장되지 않습니다."
+            }
         }
         loopback.onReady = { [weak self, weak loopback] port in
             guard let self, let loopback, self.epoch == generation else { return }
@@ -224,7 +230,9 @@ final class OfficialTransport: @unchecked Sendable {
                 defer { if self.epoch == generation { self.cancelLogin() } }
                 do {
                     let transaction = try LoginTransaction(port: port, existingClient: existing?.clientID)
-                    let url = try OAuthContract.authorization(transaction: transaction, host: self.host)
+                    var authorization = URLComponents(url: try OAuthContract.authorization(transaction: transaction, host: self.host), resolvingAgainstBaseURL: false)!
+                    if let hint = existing?.idToken { authorization.queryItems?.append(URLQueryItem(name: "id_token_hint", value: hint)) }
+                    let url = authorization.url!
                     // Install the continuation before handing off to the system browser.
                     let codeTask = Task { try await loopback.wait(transaction: transaction) }
                     await Task.yield()
@@ -243,7 +251,7 @@ final class OfficialTransport: @unchecked Sendable {
                     guard !reply.access_token.isEmpty, reply.token_type?.lowercased() == "bearer", let expiry = reply.expires_in, expiry > 0, expiry < 31_536_000 else { throw SafeFailure.invalidToken }
                     guard self.epoch == generation, !Task.isCancelled else { throw SafeFailure.cancelled }
                     let record = AccountRecord(subject: identity.subject, clientID: code.clientID, label: identity.label,
-                        accessToken: reply.access_token, refreshToken: reply.refresh_token, expiresAt: Date().addingTimeInterval(expiry), scopes: scopes,
+                        accessToken: reply.access_token, refreshToken: reply.refresh_token, idToken: idToken, expiresAt: Date().addingTimeInterval(expiry), scopes: scopes,
                         model: existing?.model, usageAcknowledged: existing?.usageAcknowledged ?? false)
                     var updated = self.accounts.filter { $0.id != record.id }; updated.append(record)
                     try self.save(updated); self.selectedID = record.id; self.models = []
@@ -279,6 +287,7 @@ final class OfficialTransport: @unchecked Sendable {
             guard let index = self.accounts.firstIndex(where: { $0.id == record.id }) else { throw SafeFailure.cancelled }
             var updated = self.accounts; updated[index].accessToken = reply.access_token
             updated[index].refreshToken = reply.refresh_token ?? record.refreshToken
+            updated[index].idToken = reply.id_token ?? record.idToken
             updated[index].expiresAt = Date().addingTimeInterval(expiry); updated[index].scopes = scopes
             try self.save(updated); return updated[index]
         }

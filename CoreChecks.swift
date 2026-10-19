@@ -53,6 +53,8 @@ import CryptoKit
         check(AnswerPages.split("a\nb\nc") == ["a", "b", "c"], "answer pagination")
         check(AnswerPages.split("\\begin{cases}\na & x>0\\\\\nb & x<0\n\\end{cases}").count == 1, "cases atomic")
         check(AnswerPages.split(" \n ").isEmpty, "empty answer")
+        check(AnswerPages.split("\\[\n\\frac{1}{x}\n\\]").count == 1, "multiline display math stays atomic")
+        check(AnswerPages.split("$$\nx^2\n$$").count == 1, "multiline dollar math stays atomic")
         let tx = try LoginTransaction(port: 34567)
         check(tx.verifier.count >= 43, "PKCE length")
         check(tx.state != tx.nonce && tx.nonce != tx.verifier, "fresh independent state")

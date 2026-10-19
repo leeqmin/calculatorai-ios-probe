@@ -18,6 +18,9 @@ import WebKit
     private var equalsTask: Task<Void, Never>?
     private var answerTask: Task<Void, Never>?
     private var generation = UUID()
+    #if DEBUG
+    var syntheticResponder: ((AIInput) async throws -> String)?
+    #endif
     var answer: String { pages.isEmpty ? "0" : pages[min(page, pages.count - 1)] }
 
     func press(_ key: String) {
@@ -59,6 +62,7 @@ import WebKit
     }
     func edit() { if ai && !pending { keyboard = true } }
     func swipe(_ translation: CGSize) {
+        if ai, translation.height > 35, abs(translation.height) > abs(translation.width) { keyboard = false; return }
         guard ai, !pending, abs(translation.width) > 35, abs(translation.width) > abs(translation.height) else { return }
         page = min(max(0, page + (translation.width < 0 ? 1 : -1)), max(0, pages.count - 1))
     }
@@ -93,7 +97,13 @@ import WebKit
             guard let self else { return }
             defer { if self.generation == transaction { self.pending = false; self.answerTask = nil } }
             do {
-                let text = try await self.connection.answer(input)
+                let text: String
+                #if DEBUG
+                if let responder = self.syntheticResponder { text = try await responder(input) }
+                else { text = try await self.connection.answer(input) }
+                #else
+                text = try await self.connection.answer(input)
+                #endif
                 guard !Task.isCancelled, self.generation == transaction, self.ai else { return }
                 self.pages = AnswerPages.split(text); self.page = 0; self.draft = ""
             } catch {
@@ -101,6 +111,46 @@ import WebKit
             }
         }
     }
+    #if DEBUG
+    func syntheticChecks() async {
+        if ProcessInfo.processInfo.arguments.contains("--calculator-render-check") {
+            ai = true; pages = ["\\(\\displaystyle \\frac{1}{x}\\)"]; page = 0; return
+        }
+        guard ProcessInfo.processInfo.arguments.contains("--calculator-self-check") else { return }
+        var passed = 0, errors: [String] = []
+        func check(_ ok: Bool, _ label: String) { if ok { passed += 1 } else { errors.append(label) } }
+        clear(); press("2"); press("+"); press("3"); press("=")
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        check(engine.value == 5, "normal equals")
+        press("="); press("="); check(ai, "double equals enters")
+        press("="); press("="); check(ai, "double equals idempotent")
+        let saved = engine.entry; press("7"); press("sin"); press("MS"); press("DEG")
+        check(engine.entry == saved && !engine.hasMemory && engine.degrees, "AI keypad isolated")
+        edit(); check(keyboard, "AI keyboard opens")
+        var count = 0
+        syntheticResponder = { _ in count += 1; try await Task.sleep(nanoseconds: 120_000_000); return "\\(\\frac{1}{x}\\)\n2" }
+        draft = "synthetic ln(x) derivative"; sendDraft(); sendDraft()
+        check(pending && answer == "0" && !keyboard, "pending 0 and duplicate guard")
+        try? await Task.sleep(nanoseconds: 220_000_000)
+        check(!pending && pages.count == 2 && count == 1, "one request and final pages")
+        swipe(CGSize(width: -70, height: 0)); check(answer == "2", "swipe next")
+        swipe(CGSize(width: 70, height: 0)); check(answer.contains("frac"), "swipe previous")
+        press("="); press("="); check(pages.count == 2, "AI reentry preserves answer")
+        draft = "synthetic cancellation"; sendDraft(); clear()
+        try? await Task.sleep(nanoseconds: 220_000_000)
+        check(!ai && !pending && engine.display == "0" && pages.isEmpty, "C cancels stale response")
+        clear(); check(!ai && engine.display == "0", "C idempotent")
+        edit(); check(!keyboard, "normal double display does not edit")
+        press("9"); let preserved = engine.entry
+        for key in CalculatorKeys.secret { press(key) }
+        check(settings && engine.entry == preserved, "settings sequence restores calculation")
+        settings = false; clear(); syntheticResponder = nil
+        let report = errors.isEmpty ? "PASS: \(passed) native-model synthetic checks; no real account/clipboard/network used." : "FAIL: " + errors.joined(separator: ", ")
+        if let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            try? report.write(to: folder.appendingPathComponent("mock-app-checks.txt"), atomically: true, encoding: .utf8)
+        }
+    }
+    #endif
 }
 
 @main struct ScientificCalculatorApp: App {
@@ -109,6 +159,11 @@ import WebKit
         WindowGroup {
             CalculatorScreen(model: model)
                 .preferredColorScheme(.dark)
+                .task {
+                    #if DEBUG
+                    await model.syntheticChecks()
+                    #endif
+                }
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in model.keyboard = false }
         }
     }
@@ -137,9 +192,12 @@ struct CalculatorScreen: View {
                             Text(model.engine.display).font(.system(size: 42, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.2)
                                 .accessibilityIdentifier("calculator-display")
                         }.padding(12)
+                    } else if model.pending || model.pages.isEmpty {
+                        VStack { Spacer(minLength: 0); HStack { Spacer(minLength: 0); Text("0").font(.system(size: 42, weight: .semibold)) } }
+                            .padding(12).accessibilityLabel("0").accessibilityIdentifier("calculator-display")
                     } else {
-                        FormulaDisplay(text: model.pending ? "0" : model.answer).padding(.horizontal, 10)
-                            .accessibilityLabel(model.pending ? "0" : model.answer)
+                        FormulaDisplay(text: model.answer).padding(12)
+                            .accessibilityLabel(model.answer)
                             .accessibilityIdentifier("calculator-display")
                     }
                     SendKeyboard(text: $model.draft, active: $model.keyboard, onSend: model.sendDraft)
@@ -148,7 +206,8 @@ struct CalculatorScreen: View {
                 .frame(maxWidth: .infinity).frame(height: compact ? 90 : 128)
                 .contentShape(Rectangle())
                 .highPriorityGesture(LongPressGesture(minimumDuration: 0.6).onEnded { _ in model.paste() }
-                    .exclusively(before: TapGesture(count: 2).onEnded { model.edit() }))
+                    .exclusively(before: TapGesture(count: 2).onEnded { model.edit() }
+                        .exclusively(before: TapGesture().onEnded { model.keyboard = false })))
                 .simultaneousGesture(DragGesture(minimumDistance: 25).onEnded { model.swipe($0.translation) })
                 HStack(spacing: 18) {
                     Button(model.engine.degrees ? "DEG" : "RAD") { model.press("DEG") }.accessibilityIdentifier("angle")
@@ -246,7 +305,22 @@ struct FormulaDisplay: UIViewRepresentable {
     class Coordinator: NSObject, WKNavigationDelegate {
         weak var web: WKWebView?
         var text = "0", loaded = false
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loaded = true; render() }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            loaded = true; render()
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--calculator-render-check") {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    webView.evaluateJavaScript("!!document.querySelector('.katex .mfrac') && document.getElementById('answer').getBoundingClientRect().width <= document.getElementById('box').clientWidth + 1") { value, error in
+                        let report = error == nil && value as? Bool == true ? "PASS: offline KaTeX fraction rendered and fit the display." : "FAIL: offline renderer"
+                        if let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                            try? report.write(to: folder.appendingPathComponent("math-render-check.txt"), atomically: true, encoding: .utf8)
+                        }
+                    }
+                }
+            }
+            #endif
+        }
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             decisionHandler(navigationAction.request.url?.isFileURL == true ? .allow : .cancel)
@@ -295,7 +369,7 @@ struct ConnectionSettings: View {
                     Link("공개 소스·검증 범위", destination: URL(string: "https://github.com/leeqmin/calculatorai-ios-probe")!)
                 }.font(.footnote)
                 Section("조작") {
-                    Text("= 두 번: AI 진입 · C: 취소하고 계산기로\nAI에서 화면 두 번: 키보드 · 길게: 텍스트/사진 붙여넣고 전송\n키보드 전송: 질문 보내기 · 화면 좌우 스와이프: 답 넘기기\n설정: ln → n! → mod → ln (4초 이내)").font(.footnote)
+                    Text("= 두 번: AI 진입 · C: 취소하고 계산기로\nAI에서 화면 두 번: 키보드 · 길게: 텍스트/사진 붙여넣고 전송\n키보드 전송: 질문 보내기 · 화면 한 번/아래 스와이프: 키보드 닫기\n화면 좌우 스와이프: 답 넘기기\n설정: ln → n! → mod → ln (4초 이내)").font(.footnote)
                 }
             }
             .navigationTitle("설정").navigationBarTitleDisplayMode(.inline)

@@ -20,11 +20,28 @@ shasum -a 256 build/ScientificCalculator-unsigned.ipa | tee build/ipa-sha256.txt
 # Simulator boot is independent of personal accounts and uses synthetic/offline data only.
 xcodebuild -project ScientificCalculator.xcodeproj -scheme ScientificCalculator -configuration Debug \
   -destination 'generic/platform=iOS Simulator' -derivedDataPath build/Simulator CODE_SIGNING_ALLOWED=NO build > build/simulator-build.log 2>&1 || { tail -100 build/simulator-build.log; exit 1; }
-DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; ds=[d for a in json.load(sys.stdin)["devices"].values() for d in a]; print(next((d["udid"] for d in ds if d["name"]=="iPhone 17 Pro"),ds[0]["udid"]))')
+TYPE=$(xcrun simctl list devicetypes -j | python3 -c 'import json,sys; ds=json.load(sys.stdin)["devicetypes"]; print(next((d["identifier"] for d in ds if d["name"]=="iPhone 12 mini"),""))')
+RUNTIME=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; print(next(d["identifier"] for d in json.load(sys.stdin)["runtimes"] if d.get("isAvailable") and "iOS" in d["name"]))')
+if [[ -n "$TYPE" ]]; then
+  DEVICE=$(xcrun simctl create 'Calculator iPhone 12 mini' "$TYPE" "$RUNTIME")
+else
+  DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; ds=[d for a in json.load(sys.stdin)["devices"].values() for d in a]; print(next(d["udid"] for d in ds if d["name"].startswith("iPhone")))')
+fi
 xcrun simctl boot "$DEVICE" || true
 xcrun simctl bootstatus "$DEVICE" -b
 xcrun simctl install "$DEVICE" build/Simulator/Build/Products/Debug-iphonesimulator/ScientificCalculator.app
-xcrun simctl launch "$DEVICE" org.local.scientificcalculator.personal
-sleep 3
+xcrun simctl launch "$DEVICE" org.local.scientificcalculator.personal --calculator-self-check
+sleep 5
+CONTAINER=$(xcrun simctl get_app_container "$DEVICE" org.local.scientificcalculator.personal data)
+cp "$CONTAINER/Documents/mock-app-checks.txt" build/mock-app-checks.txt
+cat build/mock-app-checks.txt
+grep -q '^PASS:' build/mock-app-checks.txt
 xcrun simctl io "$DEVICE" screenshot build/calculator-simulator.png
+xcrun simctl terminate "$DEVICE" org.local.scientificcalculator.personal
+xcrun simctl launch "$DEVICE" org.local.scientificcalculator.personal --calculator-render-check
+sleep 5
+cp "$CONTAINER/Documents/math-render-check.txt" build/math-render-check.txt
+cat build/math-render-check.txt
+grep -q '^PASS:' build/math-render-check.txt
+xcrun simctl io "$DEVICE" screenshot build/formula-simulator.png
 echo 'Unsigned IPA and simulator launch completed. Real iPhone signing, gestures, login and inference remain unverified.'

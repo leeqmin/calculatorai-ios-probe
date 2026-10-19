@@ -178,12 +178,15 @@ enum AnswerPages {
     static func split(_ answer: String) -> [String] {
         let normalized = answer.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return [] }
-        var pages: [String] = [], buffer = "", depth = 0
+        var pages: [String] = [], buffer = "", depth = 0, displayMath = false
         for line in normalized.components(separatedBy: "\n") {
+            let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+            if trimmedLine == "\\[" || (trimmedLine == "$$" && !displayMath) { displayMath = true }
+            else if trimmedLine == "\\]" || (trimmedLine == "$$" && displayMath) { displayMath = false }
             depth += line.components(separatedBy: "\\begin{").count - 1
             depth -= line.components(separatedBy: "\\end{").count - 1
             buffer += buffer.isEmpty ? line : "\n" + line
-            if depth <= 0 {
+            if depth <= 0 && !displayMath {
                 let trimmed = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty, trimmed != "$$", trimmed != "\\[", trimmed != "\\]" { pages.append(trimmed) }
                 buffer = ""; depth = 0

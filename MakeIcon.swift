@@ -1,5 +1,5 @@
 import AppKit
-let side = 1024
+let side: CGFloat = 1024
 let image = NSImage(size: NSSize(width: side, height: side))
 image.lockFocus()
 NSColor(calibratedWhite: 0.14, alpha: 1).setFill(); NSBezierPath(rect: NSRect(x: 0, y: 0, width: side, height: side)).fill()
@@ -8,7 +8,7 @@ NSColor(calibratedWhite: 0.07, alpha: 1).setFill(); NSBezierPath(roundedRect: NS
 let text = "0" as NSString
 text.draw(at: NSPoint(x: 667, y: 718), withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 97, weight: .medium), .foregroundColor: NSColor.white])
 for row in 0..<4 { for column in 0..<4 {
-    let rect = NSRect(x: 254 + column * 133, y: 143 + row * 129, width: 111, height: 105)
+    let rect = NSRect(x: CGFloat(254 + column * 133), y: CGFloat(143 + row * 129), width: 111, height: 105)
     (column == 3 ? NSColor(calibratedRed: 118/255, green: 185/255, blue: 237/255, alpha: 1) : NSColor(calibratedWhite: 0.67, alpha: 1)).setFill()
     NSBezierPath(roundedRect: rect, xRadius: 25, yRadius: 25).fill()
     if column == 3 {

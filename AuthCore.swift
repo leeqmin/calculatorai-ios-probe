@@ -141,6 +141,7 @@ struct AccountRecord: Codable, Identifiable {
     var label: String
     var accessToken: String
     var refreshToken: String?
+    var idToken: String?
     var expiresAt: Date
     var scopes: [String]
     var model: String?
