@@ -1,6 +1,6 @@
 # 아이폰 네이티브 계산기 — 1단계 연결 시험
 
-상태: 소스 준비만 완료. Windows에는 Swift/Xcode가 없어 **컴파일·단위 테스트·아이폰 실행을 하지 못했습니다.** 완성된 AI 계산기나 실제 OAuth 구현이 아닙니다.
+상태 (2026-10-19): **GitHub 표준 Mac runner에서 핵심 검사 및 iOS 장치용 미서명 앱 빌드 성공.** [실행 결과](https://github.com/leeqmin/calculatorai-ios-probe/actions/runs/39211454008), 빌드 커밋 `3cae7bb11d38f1c2353ca1f51d048d6e84dd2ab3`, 작업 47초. Windows 자체에서 컴파일한 것이 아닙니다. **아이폰 설치·실행·실제 OAuth/AI 요청은 여전히 미검증**입니다. 완성된 AI 계산기가 아닙니다.
 
 ## 왜 이 시험부터 하는가
 
@@ -23,7 +23,9 @@ Xcode를 설치하고 이 폴더에서 `bash build-macos.sh`를 실행합니다.
 
 직접 Mac 설치: CalculatorProbe.xcodeproj를 열고 Signing & Capabilities에서 자신의 Personal Team/고유 Bundle ID를 선택한 뒤 iPhone을 연결해 실행합니다. 계정 로그인, 기기 신뢰 및 Developer Mode는 사용자가 직접 승인해야 합니다.
 
-Windows만 있는 경우: 사용자가 별도로 승인한 GitHub 저장소에 **이 폴더만** 올려 Mac Actions runner로 빌드할 수 있습니다. 이 템플릿은 공개 저장소에서만, 수동 실행 시 공개/무료 저장 공간 확인을 체크해야 실행됩니다. 공개 표준 runner의 빌드 시간은 무료이지만 아티팩트 저장 공간은 계정의 공유 한도 확인이 필요합니다. 결제 수단 추가/유료 전환/초과 사용을 허용하지 않습니다. 현재 원격 저장소를 만들거나 업로드/실행하지 않았습니다.
+Windows만 있는 경우: 사용자가 별도로 승인한 GitHub 저장소에 **이 폴더만** 올려 Mac Actions runner로 빌드할 수 있습니다. 이 템플릿은 공개 저장소에서만, 수동 실행 시 공개/무료 저장 공간 확인을 체크해야 실행됩니다. 공개 표준 runner의 빌드 시간은 무료이지만 아티팩트 저장 공간은 계정의 공유 한도 확인이 필요합니다. 결제 수단 추가/유료 전환/초과 사용을 허용하지 않습니다. 사용자 승인 후 시험용 소스 11개만 공개 저장소에 업로드하고 수동 실행 1회를 완료했습니다. 결제·Apple 계정·실제 OpenAI 자격 증명을 사용하지 않았습니다.
+
+생성된 아티팩트는 65.6 KB이며 보관 기간은 1일입니다. 현재 자동 브라우저에서 다운로드 요청이 시간 초과/클라이언트 차단되어 로컬 파일 확보 및 내부 구조·해시 독립 검사는 하지 못했습니다. [실행 결과 페이지](https://github.com/leeqmin/calculatorai-ios-probe/actions/runs/39211454008)의 Artifacts에서 사용자 본인이 내려받아야 합니다. 표시된 SHA-256은 GitHub 아티팩트 값이며 개별 IPA 파일 해시를 직접 계산한 것이 아닙니다.
 
 IPA 설치는 별도 단계입니다. AltStore Classic/AltServer의 Windows 경로가 후보이며 Apple 계정·기기 신뢰·설치 도구 승인이 필요합니다. 무료 개인 서명은 보통 7일 후 만료되어 갱신이 필요합니다. iPhone 12 mini / 사용자 보고 iOS 26.6.1에서의 호환성과 재서명 설치는 아직 검증하지 않았습니다. Apple 자격 증명을 GitHub에 넣지 않습니다.
 
