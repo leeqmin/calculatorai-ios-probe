@@ -191,7 +191,7 @@ struct CalculatorScreen: View {
                             Spacer(minLength: 0)
                             Text(model.engine.display).font(.system(size: 42, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.2)
                                 .accessibilityIdentifier("calculator-display")
-                        }.padding(12)
+                        }.padding(12).frame(maxWidth: .infinity, alignment: .trailing)
                     } else if model.pending || model.pages.isEmpty {
                         VStack { Spacer(minLength: 0); HStack { Spacer(minLength: 0); Text("0").font(.system(size: 42, weight: .semibold)) } }
                             .padding(12).accessibilityLabel("0").accessibilityIdentifier("calculator-display")
