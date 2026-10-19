@@ -1,0 +1,46 @@
+// !$*UTF8*$!
+{
+ archiveVersion = 1; classes = {}; objectVersion = 56;
+ objects = {
+ A10000000000000000000001 = {isa = PBXBuildFile; fileRef = A10000000000000000000011; };
+ A10000000000000000000002 = {isa = PBXBuildFile; fileRef = A10000000000000000000012; };
+ A10000000000000000000003 = {isa = PBXBuildFile; fileRef = A10000000000000000000013; };
+ A10000000000000000000004 = {isa = PBXBuildFile; fileRef = A10000000000000000000014; };
+ A10000000000000000000005 = {isa = PBXBuildFile; fileRef = A10000000000000000000015; };
+ A10000000000000000000006 = {isa = PBXBuildFile; fileRef = A10000000000000000000016; };
+ A10000000000000000000007 = {isa = PBXBuildFile; fileRef = A10000000000000000000017; };
+ A10000000000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalculatorCore.swift; sourceTree = "<group>"; };
+ A10000000000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthCore.swift; sourceTree = "<group>"; };
+ A10000000000000000000013 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTConnection.swift; sourceTree = "<group>"; };
+ A10000000000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalculatorApp.swift; sourceTree = "<group>"; };
+ A10000000000000000000015 = {isa = PBXFileReference; lastKnownFileType = text.html; path = Renderer.html; sourceTree = "<group>"; };
+ A10000000000000000000016 = {isa = PBXFileReference; lastKnownFileType = folder; path = katex; sourceTree = "<group>"; };
+ A10000000000000000000017 = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+ A10000000000000000000018 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ScientificCalculator.app; sourceTree = BUILT_PRODUCTS_DIR; };
+ A10000000000000000000020 = {isa = PBXGroup; children = (A10000000000000000000011,A10000000000000000000012,A10000000000000000000013,A10000000000000000000014,A10000000000000000000015,A10000000000000000000016,A10000000000000000000017,A10000000000000000000021); sourceTree = "<group>"; };
+ A10000000000000000000021 = {isa = PBXGroup; children = (A10000000000000000000018); name = Products; sourceTree = "<group>"; };
+ A10000000000000000000022 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000001,A10000000000000000000002,A10000000000000000000003,A10000000000000000000004); runOnlyForDeploymentPostprocessing = 0; };
+ A10000000000000000000023 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+ A10000000000000000000024 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000005,A10000000000000000000006,A10000000000000000000007); runOnlyForDeploymentPostprocessing = 0; };
+ A10000000000000000000025 = {isa = PBXNativeTarget; buildConfigurationList = A10000000000000000000032; buildPhases = (A10000000000000000000022,A10000000000000000000023,A10000000000000000000024); buildRules = (); dependencies = (); name = ScientificCalculator; productName = ScientificCalculator; productReference = A10000000000000000000018; productType = "com.apple.product-type.application"; };
+ A10000000000000000000026 = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = YES; LastSwiftUpdateCheck = 1600; LastUpgradeCheck = 1600; }; buildConfigurationList = A10000000000000000000031; compatibilityVersion = "Xcode 14.0"; developmentRegion = ko; knownRegions = (ko,en,Base); mainGroup = A10000000000000000000020; productRefGroup = A10000000000000000000021; projectDirPath = ""; projectRoot = ""; targets = (A10000000000000000000025); };
+ A10000000000000000000031 = {isa = XCConfigurationList; buildConfigurations = (A10000000000000000000041,A10000000000000000000042); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+ A10000000000000000000032 = {isa = XCConfigurationList; buildConfigurations = (A10000000000000000000043,A10000000000000000000044); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+ A10000000000000000000041 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SWIFT_VERSION = 5.0; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; }; };
+ A10000000000000000000042 = {isa = XCBuildConfiguration; name = Release; buildSettings = {CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SWIFT_VERSION = 5.0; SWIFT_COMPILATION_MODE = wholemodule; }; };
+ A10000000000000000000043 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {
+ CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_FILE = CalculatorInfo.plist;
+ INFOPLIST_KEY_CFBundleDisplayName = "공학용 계산기"; INFOPLIST_KEY_UILaunchScreen_Generation = YES; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+ MARKETING_VERSION = 1.0.0; PRODUCT_BUNDLE_IDENTIFIER = org.local.scientificcalculator.personal; PRODUCT_NAME = "$(TARGET_NAME)";
+ ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; TARGETED_DEVICE_FAMILY = "1,2";
+ LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks"; SWIFT_EMIT_LOC_STRINGS = YES;
+ }; };
+ A10000000000000000000044 = {isa = XCBuildConfiguration; name = Release; buildSettings = {
+ CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_FILE = CalculatorInfo.plist;
+ INFOPLIST_KEY_CFBundleDisplayName = "공학용 계산기"; INFOPLIST_KEY_UILaunchScreen_Generation = YES; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+ MARKETING_VERSION = 1.0.0; PRODUCT_BUNDLE_IDENTIFIER = org.local.scientificcalculator.personal; PRODUCT_NAME = "$(TARGET_NAME)";
+ ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; TARGETED_DEVICE_FAMILY = "1,2";
+ LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks"; SWIFT_EMIT_LOC_STRINGS = YES;
+ }; };
+ }; rootObject = A10000000000000000000026;
+}

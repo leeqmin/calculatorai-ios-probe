@@ -1,0 +1,309 @@
+import SwiftUI
+import UIKit
+import WebKit
+
+@MainActor final class CalculatorModel: ObservableObject {
+    @Published var engine = ScientificEngine()
+    @Published private(set) var ai = false
+    @Published private(set) var pending = false
+    @Published private(set) var pages: [String] = []
+    @Published private(set) var page = 0
+    @Published var draft = ""
+    @Published var keyboard = false
+    @Published var settings = false
+    let connection = ChatGPTConnection()
+    private var sequence = HiddenSequence()
+    private var snapshot: ScientificEngine?
+    private var lastEquals: TimeInterval?
+    private var equalsTask: Task<Void, Never>?
+    private var answerTask: Task<Void, Never>?
+    private var generation = UUID()
+    var answer: String { pages.isEmpty ? "0" : pages[min(page, pages.count - 1)] }
+
+    func press(_ key: String) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let before = engine
+        let oldIndex = sequence.index
+        if sequence.accept(key, now: now) {
+            if let snapshot { engine = snapshot }
+            snapshot = nil; keyboard = false; equalsTask?.cancel(); lastEquals = nil; settings = true; return
+        }
+        if sequence.index == 1, (oldIndex == 0 || key == "ln") { snapshot = before }
+        if sequence.index == 0 { snapshot = nil }
+        if key == "C" { clear(); return }
+        if key == "=" {
+            if let previous = lastEquals, now - previous <= 0.33 {
+                equalsTask?.cancel(); equalsTask = nil; lastEquals = nil
+                if !ai { ai = true; pages = []; page = 0; draft = "" }
+                return
+            }
+            lastEquals = now; equalsTask?.cancel()
+            if !ai {
+                equalsTask = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 335_000_000)
+                    guard !Task.isCancelled, let self, !self.ai else { return }
+                    self.engine.press("="); self.lastEquals = nil
+                }
+            }
+            return
+        }
+        if !ai {
+            if lastEquals != nil { equalsTask?.cancel(); engine.press("="); lastEquals = nil }
+            engine.press(key)
+        }
+    }
+    func clear() {
+        generation = UUID(); answerTask?.cancel(); answerTask = nil; equalsTask?.cancel(); equalsTask = nil
+        lastEquals = nil; sequence.reset(); snapshot = nil
+        pending = false; keyboard = false; ai = false; draft = ""; pages = []; page = 0; engine.clear()
+    }
+    func edit() { if ai && !pending { keyboard = true } }
+    func swipe(_ translation: CGSize) {
+        guard ai, !pending, abs(translation.width) > 35, abs(translation.width) > abs(translation.height) else { return }
+        page = min(max(0, page + (translation.width < 0 ? 1 : -1)), max(0, pages.count - 1))
+    }
+    func sendDraft() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ai, !pending, !text.isEmpty else { return }
+        send(AIInput(text: text, image: nil, imageType: nil))
+    }
+    func paste() {
+        // This is the ONLY clipboard read path: explicit long-press, AI mode, idle.
+        guard ai, !pending else { return }
+        do {
+            if let image = UIPasteboard.general.image {
+                guard image.size.width * image.scale <= 12_000, image.size.height * image.scale <= 12_000,
+                      image.size.width * image.size.height * image.scale * image.scale <= 24_000_000 else { throw SafeFailure.tooLarge }
+                let png = image.pngData()
+                if let png, png.count <= 8_000_000 {
+                    send(AIInput(text: "사진의 문제를 풀고 최종 답만 알려줘.", image: png, imageType: "image/png"))
+                } else if let jpeg = image.jpegData(compressionQuality: 0.95), jpeg.count <= 8_000_000 {
+                    send(AIInput(text: "사진의 문제를 풀고 최종 답만 알려줘.", image: jpeg, imageType: "image/jpeg"))
+                } else { throw SafeFailure.tooLarge }
+            } else if let text = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+                send(AIInput(text: text, image: nil, imageType: nil))
+            }
+        } catch { connection.recordFailure(error) }
+    }
+    private func send(_ input: AIInput) {
+        guard ai, !pending else { return }
+        pending = true; keyboard = false; pages = []; page = 0
+        let transaction = UUID(); generation = transaction
+        answerTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.generation == transaction { self.pending = false; self.answerTask = nil } }
+            do {
+                let text = try await self.connection.answer(input)
+                guard !Task.isCancelled, self.generation == transaction, self.ai else { return }
+                self.pages = AnswerPages.split(text); self.page = 0; self.draft = ""
+            } catch {
+                if self.generation == transaction { self.connection.recordFailure(error) }
+            }
+        }
+    }
+}
+
+@main struct ScientificCalculatorApp: App {
+    @StateObject private var model = CalculatorModel()
+    var body: some Scene {
+        WindowGroup {
+            CalculatorScreen(model: model)
+                .preferredColorScheme(.dark)
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in model.keyboard = false }
+        }
+    }
+}
+
+private extension Color {
+    static let calculatorBackground = Color(red: 32 / 255, green: 32 / 255, blue: 32 / 255)
+    static let functionKey = Color(red: 50 / 255, green: 50 / 255, blue: 50 / 255)
+    static let numberKey = Color(red: 59 / 255, green: 59 / 255, blue: 59 / 255)
+    static let equalsKey = Color(red: 118 / 255, green: 185 / 255, blue: 237 / 255)
+}
+
+struct CalculatorScreen: View {
+    @ObservedObject var model: CalculatorModel
+    var body: some View {
+        GeometryReader { geometry in
+            let compact = geometry.size.height < 600
+            VStack(spacing: 0) {
+                HStack { Text("공학용").font(.system(size: 20, weight: .semibold)); Spacer() }
+                    .frame(height: compact ? 32 : 42).padding(.horizontal, 12)
+                ZStack(alignment: .bottomTrailing) {
+                    if !model.ai {
+                        VStack(alignment: .trailing, spacing: 8) {
+                            Text(model.engine.expression).font(.system(size: 13)).foregroundStyle(.gray).lineLimit(1).minimumScaleFactor(0.35)
+                            Spacer(minLength: 0)
+                            Text(model.engine.display).font(.system(size: 42, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.2)
+                                .accessibilityIdentifier("calculator-display")
+                        }.padding(12)
+                    } else {
+                        FormulaDisplay(text: model.pending ? "0" : model.answer).padding(.horizontal, 10)
+                            .accessibilityLabel(model.pending ? "0" : model.answer)
+                            .accessibilityIdentifier("calculator-display")
+                    }
+                    SendKeyboard(text: $model.draft, active: $model.keyboard, onSend: model.sendDraft)
+                        .frame(width: 1, height: 1).opacity(0.02).accessibilityHidden(true)
+                }
+                .frame(maxWidth: .infinity).frame(height: compact ? 90 : 128)
+                .contentShape(Rectangle())
+                .highPriorityGesture(LongPressGesture(minimumDuration: 0.6).onEnded { _ in model.paste() }
+                    .exclusively(before: TapGesture(count: 2).onEnded { model.edit() }))
+                .simultaneousGesture(DragGesture(minimumDistance: 25).onEnded { model.swipe($0.translation) })
+                HStack(spacing: 18) {
+                    Button(model.engine.degrees ? "DEG" : "RAD") { model.press("DEG") }.accessibilityIdentifier("angle")
+                    Text("삼각함수 · 로그 · 지수").foregroundStyle(Color.white.opacity(0.7))
+                    Spacer(minLength: 0)
+                }.font(.system(size: 12)).buttonStyle(.plain).padding(.horizontal, 12).frame(height: compact ? 26 : 32)
+                HStack(spacing: 0) {
+                    ForEach(["MC", "MR", "M+", "M−", "MS", "M⌄"], id: \.self) { key in
+                        Button { model.press(key) } label: { Text(key).font(.system(size: 13)).frame(maxWidth: .infinity, maxHeight: .infinity) }
+                            .buttonStyle(.plain).accessibilityIdentifier("key-" + key)
+                    }
+                }.frame(height: compact ? 28 : 34)
+                VStack(spacing: 3) {
+                    ForEach(0..<CalculatorKeys.rows.count, id: \.self) { row in
+                        HStack(spacing: 3) {
+                            ForEach(CalculatorKeys.rows[row], id: \.self) { key in
+                                Button { model.press(key) } label: {
+                                    Text(key).font(.system(size: key.count == 1 && key.first!.isNumber ? 25 : 20, weight: .medium))
+                                        .lineLimit(1).minimumScaleFactor(0.55).frame(maxWidth: .infinity, maxHeight: .infinity)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(CalculatorButtonStyle(key: key))
+                                .accessibilityIdentifier("key-" + key)
+                            }
+                        }.frame(maxHeight: .infinity)
+                    }
+                }.padding(.bottom, 4)
+            }
+            .padding(.horizontal, 4).foregroundStyle(.white).background(Color.calculatorBackground)
+        }
+        .background(Color.calculatorBackground.ignoresSafeArea())
+        .ignoresSafeArea(.keyboard)
+        .sheet(isPresented: $model.settings) { ConnectionSettings(connection: model.connection) }
+    }
+}
+
+struct CalculatorButtonStyle: ButtonStyle {
+    let key: String
+    func makeBody(configuration: Configuration) -> some View {
+        let numeric = (key.count == 1 && key.first!.isNumber) || ["±", "."].contains(key)
+        configuration.label
+            .foregroundStyle(key == "=" ? Color.black : Color.white)
+            .background((key == "=" ? Color.equalsKey : (numeric ? Color.numberKey : Color.functionKey)).opacity(configuration.isPressed ? 0.68 : 1))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+struct SendKeyboard: UIViewRepresentable {
+    @Binding var text: String
+    @Binding var active: Bool
+    let onSend: () -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> UITextField {
+        let view = UITextField(); view.returnKeyType = .send; view.delegate = context.coordinator
+        view.autocorrectionType = .no; view.spellCheckingType = .no; view.smartQuotesType = .no; view.smartDashesType = .no
+        view.textColor = .clear; view.tintColor = .clear; view.keyboardAppearance = .dark
+        view.inputAssistantItem.leadingBarButtonGroups = []; view.inputAssistantItem.trailingBarButtonGroups = []
+        view.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .editingChanged)
+        return view
+    }
+    func updateUIView(_ view: UITextField, context: Context) {
+        context.coordinator.parent = self
+        if view.markedTextRange == nil, view.text != text { view.text = text }
+        if active, !view.isFirstResponder { DispatchQueue.main.async { if context.coordinator.parent.active { view.becomeFirstResponder() } } }
+        if !active, view.isFirstResponder { view.resignFirstResponder() }
+    }
+    class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: SendKeyboard
+        init(_ parent: SendKeyboard) { self.parent = parent }
+        @objc func changed(_ field: UITextField) { parent.text = field.text ?? "" }
+        func textFieldShouldReturn(_ field: UITextField) -> Bool {
+            field.unmarkText(); parent.text = field.text ?? ""
+            DispatchQueue.main.async { self.parent.onSend() }; return false
+        }
+        func textFieldDidEndEditing(_ field: UITextField) { parent.active = false }
+    }
+}
+
+struct FormulaDisplay: UIViewRepresentable {
+    let text: String
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = .nonPersistent()
+        let web = WKWebView(frame: .zero, configuration: configuration)
+        web.isOpaque = false; web.backgroundColor = .clear; web.scrollView.backgroundColor = .clear
+        web.scrollView.isScrollEnabled = false; web.isUserInteractionEnabled = false
+        web.navigationDelegate = context.coordinator
+        context.coordinator.web = web; context.coordinator.text = text
+        if let html = Bundle.main.url(forResource: "Renderer", withExtension: "html") {
+            web.loadFileURL(html, allowingReadAccessTo: html.deletingLastPathComponent())
+        }
+        return web
+    }
+    func updateUIView(_ web: WKWebView, context: Context) { context.coordinator.text = text; context.coordinator.render() }
+    class Coordinator: NSObject, WKNavigationDelegate {
+        weak var web: WKWebView?
+        var text = "0", loaded = false
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loaded = true; render() }
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            decisionHandler(navigationAction.request.url?.isFileURL == true ? .allow : .cancel)
+        }
+        func render() {
+            guard loaded, let bytes = try? JSONSerialization.data(withJSONObject: [text]), let json = String(data: bytes, encoding: .utf8) else { return }
+            web?.evaluateJavaScript("showAnswer((\(json))[0])", completionHandler: nil)
+        }
+    }
+}
+
+struct ConnectionSettings: View {
+    @ObservedObject var connection: ChatGPTConnection
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("ChatGPT 연결") {
+                    if !connection.accounts.isEmpty {
+                        Picker("계정", selection: Binding(get: { connection.selectedID ?? "" }, set: { connection.selectAccount($0) })) {
+                            ForEach(connection.accounts) { account in Text(account.label).tag(account.id) }
+                        }
+                    }
+                    Button(connection.selected == nil ? "ChatGPT로 로그인" : "선택한 계정 다시 로그인") { connection.login() }.disabled(connection.busy)
+                    if connection.selected != nil { Button("다른 계정 추가") { connection.login(asNewAccount: true) }.disabled(connection.busy) }
+                    if connection.busy { Button("로그인 대기 취소", role: .cancel) { connection.cancelLogin() } }
+                    Text("공식 Safari 로그인을 사용합니다. 로그인 후 이 앱으로 돌아오세요. 실제 계정 연결은 아이폰에서 확인해야 합니다.").font(.footnote)
+                }
+                if connection.selected != nil {
+                    Section("모델") {
+                        if !connection.models.isEmpty {
+                            Picker("사용할 모델", selection: Binding(get: { connection.selectedModel ?? "" }, set: connection.chooseModel)) {
+                                ForEach(connection.models) { model in Text(model.display_name).tag(model.slug) }
+                            }
+                        }
+                        Button("이 계정의 모델 목록 새로고침") { Task { await connection.loadModels() } }.disabled(connection.busy)
+                        Button("이 기기에서 계정 연결 해제", role: .destructive) { connection.disconnect() }
+                    }
+                }
+                Section("상태") { Text(connection.status).font(.footnote).textSelection(.enabled) }
+                Section("사용량·개인정보") {
+                    Text("AI는 ChatGPT 플랜의 사용량·한도를 공유합니다. 별도의 무료 무제한 사용권이 아닙니다. API 요금 결제나 키 입력은 하지 않습니다.")
+                    Text("계정 토큰은 이 기기의 Keychain에만 저장합니다. 질문과 사진은 전송할 때 OpenAI로 직접 보냅니다. 대화는 앱 메모리에만 있으며 서버 저장은 요청하지 않습니다. 앱 자체 분석·광고·원격 로그는 없습니다.")
+                    Text("숨은 제스처는 잠금이나 보안 장치가 아닙니다. 기기를 쓰는 다른 사람도 발견하면 연결된 계정을 사용할 수 있습니다.")
+                    Link("ChatGPT 계정·앱 권한 관리", destination: URL(string: "https://chatgpt.com/#settings")!)
+                    Link("공개 소스·검증 범위", destination: URL(string: "https://github.com/leeqmin/calculatorai-ios-probe")!)
+                }.font(.footnote)
+                Section("조작") {
+                    Text("= 두 번: AI 진입 · C: 취소하고 계산기로\nAI에서 화면 두 번: 키보드 · 길게: 텍스트/사진 붙여넣고 전송\n키보드 전송: 질문 보내기 · 화면 좌우 스와이프: 답 넘기기\n설정: ln → n! → mod → ln (4초 이내)").font(.footnote)
+                }
+            }
+            .navigationTitle("설정").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("닫기") { dismiss() } } }
+            .alert("ChatGPT 플랜 사용", isPresented: $connection.showUsageNotice) {
+                Button("확인") { connection.acknowledgeUsage() }
+            } message: { Text("이 앱의 AI 요청은 연결한 ChatGPT 플랜의 사용량을 사용하며 해당 한도가 적용됩니다. 최초 로그인·실제 AI 동작은 이 기기에서 확인하세요.") }
+            .task { if connection.selected != nil { await connection.loadModels() } }
+        }
+    }
+}

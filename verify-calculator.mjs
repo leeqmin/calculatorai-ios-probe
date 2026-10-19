@@ -1,0 +1,23 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import {fileURLToPath} from 'node:url';
+const root=path.dirname(fileURLToPath(import.meta.url));
+const names=['CalculatorCore.swift','AuthCore.swift','ChatGPTConnection.swift','CalculatorApp.swift','CoreChecks.swift','CalculatorInfo.plist','ScientificCalculator.pbxproj','build-calculator.sh','MakeIcon.swift','Renderer.html','KaTeX-vendor.zip','LICENSE-calculator','README-calculator.md','native-calculator.yml','verify-calculator.mjs'];
+const actual=(await fs.readdir(root)).filter(n=>!['build','ScientificCalculator.xcodeproj','Assets.xcassets','katex'].includes(n));
+assert.deepEqual(actual.sort(),names.sort(),'explicit source-only upload allowlist');
+const sources={};
+for(const name of names){const bytes=await fs.readFile(path.join(root,name));if(!name.endsWith('.zip')){const text=bytes.toString('utf8');sources[name]=text;
+ assert(!new RegExp('s'+'k-(?:proj-)?[A-Za-z0-9_-]{30,}').test(text),'no API key');
+ assert(!/-----BEGIN (?:RSA |EC )?PRIVATE KEY/.test(text),'no private key');
+ assert(!/eyJ[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{20,}\./.test(text),'no JWT');
+ if(name!=='verify-calculator.mjs')assert(!/(?:chatgpt|settings)\.dat|[a-z0-9_.+-]+@(?:naver|gmail)\.com/i.test(text),'no private account/file data');
+}console.log(name,bytes.length,crypto.createHash('sha256').update(bytes).digest('hex'));}
+const p=sources['ScientificCalculator.pbxproj'];const ids=[...p.matchAll(/^\s*([A-F0-9]{24}) = \{/gm)].map(m=>m[1]);
+assert.equal(new Set(ids).size,ids.length);for(const m of p.matchAll(/\b[A-F0-9]{24}\b/g))assert(ids.includes(m[0]),m[0]);
+const auth=sources['ChatGPTConnection.swift'];assert(auth.includes('host: "127.0.0.1"'));assert(auth.includes('kSecAttrAccessibleWhenUnlockedThisDeviceOnly'));
+assert(!/backend-api|http:\/\/0\.0\.0\.0/.test(auth));assert(!/print\(|NSLog\(/.test(auth));
+const ui=sources['CalculatorApp.swift'];assert.equal((ui.match(/UIPasteboard\.general\.(image|string)/g)||[]).length,2);assert(ui.includes('guard ai, !pending else { return }'));
+const wf=sources['native-calculator.yml'];assert(wf.includes('repository.private == false'));assert(wf.includes('workflow_dispatch:'));assert(!/^\s+(schedule|push|pull_request):/m.test(wf));
+console.log('PASS: source-only structural preflight. Swift compilation and synthetic checks require macOS; not claimed here.');

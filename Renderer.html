@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<link rel="stylesheet" href="katex/katex.min.css"><script src="katex/katex.min.js"></script>
+<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;color:white}#box{position:absolute;inset:6px 0;overflow:hidden;display:flex;align-items:center;justify-content:flex-end}#answer{font:32px -apple-system,sans-serif;white-space:nowrap;display:inline-block;transform-origin:right center;flex-shrink:0}.katex-display{margin:0}.katex{font-size:1em}.katex-error{color:white!important}</style></head>
+<body><div id="box"><span id="answer">0</span></div><script>
+'use strict';
+function showAnswer(value){
+ const answer=document.getElementById('answer'); answer.replaceChildren(); answer.style.transform='none';
+ const source=String(value).slice(0,256000); const regex=/\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)|\$\$([\s\S]*?)\$\$|\$([^$\n]+)\$/g;
+ let previous=0, match, count=0;
+ while((match=regex.exec(source))&&count++<100){
+  answer.append(document.createTextNode(source.slice(previous,match.index)));
+  const span=document.createElement('span'); answer.append(span);
+  try{katex.render(match[1]??match[2]??match[3]??match[4],span,{displayMode:false,throwOnError:false,trust:false,strict:'ignore',maxExpand:300,maxSize:10})}catch{span.textContent=match[0]}
+  previous=regex.lastIndex;
+ }
+ answer.append(document.createTextNode(source.slice(previous)));
+ requestAnimationFrame(fit);
+}
+function fit(){const a=document.getElementById('answer'),b=document.getElementById('box'); a.style.transform='none';const scale=Math.min(1,b.clientWidth/Math.max(1,a.scrollWidth),b.clientHeight/Math.max(1,a.scrollHeight));a.style.transform='scale('+scale+')'}
+new ResizeObserver(fit).observe(document.getElementById('box')); document.fonts.ready.then(fit);
+</script></body></html>
