@@ -1,0 +1,36 @@
+name: Scientific calculator - manual unsigned build
+on:
+  workflow_dispatch:
+    inputs:
+      public_source_and_storage_reviewed:
+        description: 'Approved code-only public source; standard free runner/storage; no paid use'
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+jobs:
+  build:
+    if: github.event.repository.private == false && inputs.public_source_and_storage_reviewed == true
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Synthetic security/calculator checks, unsigned device build, simulator launch
+        run: bash build-calculator.sh
+      - name: Short-lived build evidence (no real accounts or questions)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ScientificCalculator-UNSIGNED
+          path: |
+            build/ScientificCalculator-unsigned.ipa
+            build/core-checks.txt
+            build/ipa-sha256.txt
+            build/calculator-simulator.png
+            build/device-build.log
+            build/simulator-build.log
+          retention-days: 1
+          if-no-files-found: warn
