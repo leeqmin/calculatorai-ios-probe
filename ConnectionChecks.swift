@@ -68,7 +68,7 @@ final class ConnectionFixture: URLProtocol {
     static let alpha = "synthetic-alpha", beta = "synthetic-beta"
     static var passed = 0, errors: [String] = []
     static func check(_ value: Bool, _ label: String) { if value { passed += 1 } else { errors.append(label) } }
-    static func record(_ subject: String = "synthetic-a", expired: Bool = false, model: String? = alpha) -> AccountRecord {
+    static func record(_ subject: String = "synthetic-a", expired: Bool = false, model: String? = "synthetic-alpha") -> AccountRecord {
         AccountRecord(subject: subject, clientID: "oaiapp_synthetic", label: "Synthetic account",
             accessToken: "synthetic-old-access", refreshToken: "synthetic-old-refresh", idToken: nil,
             expiresAt: Date().addingTimeInterval(expired ? -3600 : 3600), scopes: [OAuthContract.planScope], model: model, usageAcknowledged: true)
@@ -82,7 +82,7 @@ final class ConnectionFixture: URLProtocol {
             exchangeFactory: { ResponseExchange(configuration: config) }, now: now)
         return (connection, memory)
     }
-    static func catalog(_ slugs: [String] = [alpha, beta], delay: Double = 0) -> ConnectionFixture.Reply {
+    static func catalog(_ slugs: [String] = ["synthetic-alpha", "synthetic-beta"], delay: Double = 0) -> ConnectionFixture.Reply {
         let body = try! JSONSerialization.data(withJSONObject: ["models": slugs.map { ["slug": $0, "display_name": $0, "visibility": "list"] }])
         return .init(body: String(decoding: body, as: UTF8.self), delay: delay)
     }
