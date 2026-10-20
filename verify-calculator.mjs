@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 const root=path.dirname(fileURLToPath(import.meta.url));
-const names=['CalculatorCore.swift','AuthCore.swift','ChatGPTConnection.swift','CalculatorApp.swift','CoreChecks.swift','CalculatorInfo.plist','ScientificCalculator.pbxproj','build-calculator.sh','MakeIcon.swift','Renderer.html','KaTeX-vendor.zip','LICENSE-calculator','README-calculator.md','native-calculator.yml','verify-calculator.mjs'];
+const names=['CalculatorCore.swift','AuthCore.swift','ConnectionRecovery.swift','ConnectionChecks.swift','ChatGPTConnection.swift','CalculatorApp.swift','CoreChecks.swift','CalculatorInfo.plist','ScientificCalculator.pbxproj','build-calculator.sh','MakeIcon.swift','Renderer.html','KaTeX-vendor.zip','LICENSE-calculator','README-calculator.md','native-calculator.yml','verify-calculator.mjs'];
 const actual=(await fs.readdir(root)).filter(n=>!['build','ScientificCalculator.xcodeproj','Assets.xcassets','katex'].includes(n));
 assert.deepEqual(actual.sort(),names.sort(),'explicit source-only upload allowlist');
 const sources={};
@@ -20,4 +20,9 @@ const auth=sources['ChatGPTConnection.swift'];assert(auth.includes('host: "127.0
 assert(!/backend-api|http:\/\/0\.0\.0\.0/.test(auth));assert(!/print\(|NSLog\(/.test(auth));
 const ui=sources['CalculatorApp.swift'];assert.equal((ui.match(/UIPasteboard\.general\.(image|string)/g)||[]).length,2);assert(ui.includes('guard ai, !pending else { return }'));
 const wf=sources['native-calculator.yml'];assert(wf.includes('repository.private == false'));assert(wf.includes('workflow_dispatch:'));assert(!/^\s+(schedule|push|pull_request):/m.test(wf));
+assert(sources['ConnectionChecks.swift'].startsWith('#if DEBUG')&&sources['ConnectionChecks.swift'].trimEnd().endsWith('#endif'),'fixtures excluded from release');
+assert(sources['ConnectionChecks.swift'].includes('override class func canInit(with request: URLRequest) -> Bool { true }'),'isolated fixtures intercept every URL');
+assert(!auth.includes('chooseModel(models[0].slug)'),'no silent model replacement');
+assert.equal((auth.match(/exchange\.open\(request\)/g)||[]).length,1,'one response exchange, no inference retry');
+assert(wf.includes('build/connection-checks.txt'),'recovery test evidence required');
 console.log('PASS: source-only structural preflight. Swift compilation and synthetic checks require macOS; not claimed here.');

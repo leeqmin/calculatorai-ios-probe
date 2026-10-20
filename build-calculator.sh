@@ -8,7 +8,7 @@ unzip -oq KaTeX-vendor.zip
 swift MakeIcon.swift Assets.xcassets/AppIcon.appiconset/Icon.png
 printf '%s\n' '{"images":[{"filename":"Icon.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}' > Assets.xcassets/AppIcon.appiconset/Contents.json
 printf '%s\n' '{"info":{"author":"xcode","version":1}}' > Assets.xcassets/Contents.json
-swiftc -target "$(uname -m)-apple-macosx13.0" -parse-as-library CalculatorCore.swift AuthCore.swift CoreChecks.swift -o build/core-checks
+swiftc -target "$(uname -m)-apple-macosx13.0" -parse-as-library CalculatorCore.swift AuthCore.swift ConnectionRecovery.swift CoreChecks.swift -o build/core-checks
 build/core-checks | tee build/core-checks.txt
 plutil -lint CalculatorInfo.plist ScientificCalculator.xcodeproj/project.pbxproj
 xcodebuild -project ScientificCalculator.xcodeproj -scheme ScientificCalculator -configuration Release \
@@ -40,6 +40,15 @@ cp "$CONTAINER/Documents/mock-app-checks.txt" build/mock-app-checks.txt
 cat build/mock-app-checks.txt
 grep -q '^PASS:' build/mock-app-checks.txt
 xcrun simctl io "$DEVICE" screenshot build/calculator-simulator.png
+xcrun simctl terminate "$DEVICE" org.local.scientificcalculator.personal
+xcrun simctl launch "$DEVICE" org.local.scientificcalculator.personal --calculator-connection-check
+for attempt in {1..45}; do
+  [[ -f "$CONTAINER/Documents/connection-checks.txt" ]] && break
+  sleep 2
+done
+cp "$CONTAINER/Documents/connection-checks.txt" build/connection-checks.txt
+cat build/connection-checks.txt
+grep -q '^PASS:' build/connection-checks.txt
 xcrun simctl terminate "$DEVICE" org.local.scientificcalculator.personal
 xcrun simctl launch "$DEVICE" org.local.scientificcalculator.personal --calculator-render-check
 for attempt in {1..30}; do

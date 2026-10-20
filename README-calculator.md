@@ -2,6 +2,14 @@
 
 New actual calculator, separate from the old synthetic CalculatorProbe. Own newly authored files are MIT licensed (LICENSE-calculator). Bundled KaTeX retains its own MIT license in KaTeX-vendor.zip/katex/LICENSE. No credentials or device identifiers belong in this repository.
 
+### 1.0.4 connection recovery hardening
+
+No calculator, rendering, gestures, OAuth endpoint/scope/client registration, bundle ID, Keychain service/key or billing changes. ConnectionRecovery.swift classifies bounded HTTP status/code/parameter/request ID and fixed response shape, never server descriptions or raw bodies. Sign-in renewal, model lookup and inference keep separate phases; the latest connection error and latest question failure survive a successful model refresh. Explicitly invalid refresh credentials are cleared while client registration/model choice are kept for user-initiated sign-in. Temporary failures, invalid-client errors and ambiguous authorization failures preserve credentials and do not start login loops or background retries.
+
+Model loading coalesces concurrent callers. Existing valid model selections stay unchanged; new accounts and removed/rejected selections require an explicit choice. Definitive machine-readable model rejections refresh GET /models once but never resend inference or select a replacement automatically. Other errors do not trigger catalog reloads. No paid or alternate endpoint fallback is introduced. Empty/malformed catalogs produce a distinct connection diagnostic rather than masquerading as a successful model lookup.
+
+ConnectionChecks.swift exists only in DEBUG: memory-only account storage and an isolated URLProtocol intercepting every URL exercise the actual token renewal, model lookup, answer parser, cancellation and account switching paths. Synthetic checks cover rotation, simultaneous model loads, preserved selections, terminal versus transient renewal errors, model removal, HTTP/SSE errors, malformed catalogs, and no inference retries. They do not establish future server compatibility or live-account success on the user's iPhone.
+
 ### 1.0.3 display and question input
 
 User confirmed real answers on 1.0.2. This update leaves authentication, inference and credentials unchanged. All main-display states reuse the same offline renderer; bare numbers (including zero) use KaTeX just like delimited AI math. Normal calculation, typed decimals, scientific notation, fit-to-size and error text remain supported.

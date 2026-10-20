@@ -286,13 +286,19 @@ struct QuestionDiagnostic {
     mutating func begin() { self = QuestionDiagnostic(); started = Date(); stage = "전송 준비" }
     mutating func fail(_ error: Error) {
         terminal = true; stage = "실패"
-        if let issue = error as? ResponseIssue {
+        if let issue = error as? ConnectionIssue {
+            httpStatus = issue.httpStatus; mediaType = issue.mediaType
+            requestID = issue.requestID; bodyShape = issue.bodyShape
+            failure = issue.diagnostic
+        } else if let issue = error as? ResponseIssue {
             var parts = [issue.reason.rawValue]
             if let code = issue.code { parts.append("코드: " + code) }
             if let parameter = issue.parameter { parts.append("항목: " + parameter) }
             if let shape = issue.bodyShape { parts.append("응답 구조: " + shape) }
             failure = parts.joined(separator: " · ")
-        } else if let safe = error as? SafeFailure { failure = safe.message }
+        } else if let safe = error as? SafeFailure {
+            if safe == .cancelled { stage = "취소됨"; failure = nil } else { failure = safe.message }
+        }
         else if error is CancellationError { stage = "취소됨"; failure = nil }
         else if let network = error as? URLError {
             failure = network.code == .timedOut ? SafeFailure.timeout.message : "네트워크 오류 (\(network.errorCode))"

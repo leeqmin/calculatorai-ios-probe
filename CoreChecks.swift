@@ -94,6 +94,7 @@ import CryptoKit
         rejects("empty question") { _ = try ResponseRequest.data(model: "test", input: AIInput(text: "", image: nil, imageType: nil)) }
         rejects("oversized question") { _ = try ResponseRequest.data(model: "test", input: AIInput(text: String(repeating: "a", count: 32001), image: nil, imageType: nil)) }
         try await responseChecks()
+        recoveryChecks()
         print("PASS: \(passed) synthetic core checks; URLSession fixture checks passed. Foundation lines blank separators: \(legacyBlanks). No real account, clipboard, external network or device used.")
     }
     static func draftChecks() {
@@ -121,6 +122,21 @@ import CryptoKit
         d.press("CE"); check(d.text.isEmpty && d.selection.location == 0, "CE clears text and selection")
         d = QuestionDraft(); for key in ["1", ".", "2", "+", "π", "×", "e", "÷", "3", "mod", "2", "%", "−", "0"] { d.press(key) }
         check(d.text == "1.2+π×e÷3 mod 2%−0", "literal keypad symbols stay visible")
+    }
+    static func recoveryChecks() {
+        let url = URL(string: "https://calculator-fixture.invalid/recovery")!
+        for code in ["invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused"] {
+            let http = HTTPURLResponse(url: url, statusCode: 400, httpVersion: nil, headerFields: [:])!
+            let issue = ConnectionIssue.http(http, body: Data(("{\"error\":\"" + code + "\"}").utf8), phase: .refresh)
+            check(issue.invalidatesTokens && issue.action == .signIn, "documented terminal refresh error " + code)
+            check(!ConnectionIssue.http(http, body: Data("{\"error\":\"invalid_grant\"}".utf8), phase: .signIn).invalidatesTokens, "auth-code failure cannot erase saved session")
+        }
+        let bad = HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: ["x-request-id": "PRIVATE QUESTION", "Content-Type": "private-mime"])!
+        let issue = ConnectionIssue.http(bad, body: Data("{\"error\":{\"code\":\"Bearer secret\",\"param\":\"sk-synthetic-value\",\"message\":\"PRIVATE QUESTION\"}}".utf8), phase: .models)
+        check(issue.code == nil && issue.parameter == nil && issue.requestID == nil, "unsafe server metadata excluded from connection diagnosis")
+        check(!issue.diagnostic.contains("PRIVATE") && !issue.diagnostic.contains("private-mime"), "raw response content never enters diagnosis")
+        check(ConnectionIssue.action(phase: .response, status: 400, code: "subscription_sharing_unsupported_capability", parameter: "input") == .request, "unsupported input cannot trigger model fallback")
+        check(ConnectionIssue.action(phase: .response, status: 400, code: "subscription_sharing_unsupported_capability", parameter: "model") == .model, "exact model capability rejection distinguished")
     }
     static var legacyBlanks = 0
     static func fixtureStage(_ name: String) { FileHandle.standardError.write(Data(("Synthetic fixture: " + name + "\n").utf8)) }

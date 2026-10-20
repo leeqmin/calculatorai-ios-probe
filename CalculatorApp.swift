@@ -162,6 +162,9 @@ import WebKit
     }
     #if DEBUG
     func syntheticChecks() async {
+        if ProcessInfo.processInfo.arguments.contains("--calculator-connection-check") {
+            await ConnectionChecks.run(); return
+        }
         if ProcessInfo.processInfo.arguments.contains("--calculator-render-check") {
             ai = true; pages = ["\\(\\displaystyle \\frac{1}{x}\\)"]; page = 0; return
         }
@@ -467,7 +470,8 @@ struct ConnectionSettings: View {
                 if connection.selected != nil {
                     Section("모델") {
                         if !connection.models.isEmpty {
-                            Picker("사용할 모델", selection: Binding(get: { connection.selectedModel ?? "" }, set: connection.chooseModel)) {
+                            Picker("사용할 모델", selection: Binding(get: { connection.usableModel ?? "" }, set: connection.chooseModel)) {
+                                Text("모델을 선택하세요").tag("")
                                 ForEach(connection.models) { model in Text(model.display_name).tag(model.slug) }
                             }
                         }
@@ -476,6 +480,12 @@ struct ConnectionSettings: View {
                     }
                 }
                 Section("연결·모델 상태") { Text(connection.status).font(.footnote).textSelection(.enabled) }
+                if let issue = connection.lastConnectionIssue {
+                    Section("최근 연결 오류") {
+                        Text(issue.diagnostic).foregroundStyle(.orange)
+                        Text("모델 조회가 성공해도 이 오류는 유지됩니다. 질문·사진·답변·로그인 비밀은 저장하지 않습니다.")
+                    }.font(.footnote).textSelection(.enabled)
+                }
                 Section("최근 AI 요청") {
                     Text(connection.question.stage).fontWeight(.semibold)
                     if let started = connection.question.started {
@@ -490,7 +500,7 @@ struct ConnectionSettings: View {
                     }
                     Text("질문·사진·답변·로그인 비밀은 진단 기록에 포함하지 않습니다. 이 기록은 앱 메모리에만 남고 모델 조회로 덮어쓰지 않습니다.")
                 }.font(.footnote).textSelection(.enabled)
-                Section("앱 버전") { Text("공학용 계산기 1.0.3 · 글꼴 통일·질문 표시·수식 입력") }.font(.footnote)
+                Section("앱 버전") { Text("공학용 계산기 1.0.4 · 연결 복구·모델 변경 대응") }.font(.footnote)
                 Section("사용량·개인정보") {
                     Text("AI는 ChatGPT 플랜의 사용량·한도를 공유합니다. 별도의 무료 무제한 사용권이 아닙니다. API 요금 결제나 키 입력은 하지 않습니다.")
                     Text("계정 토큰은 이 기기의 Keychain에만 저장합니다. 질문과 사진은 전송할 때 OpenAI로 직접 보냅니다. 대화는 앱 메모리에만 있으며 서버 저장은 요청하지 않습니다. 앱 자체 분석·광고·원격 로그는 없습니다.")
