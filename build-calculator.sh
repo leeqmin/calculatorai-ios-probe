@@ -50,4 +50,18 @@ cp "$CONTAINER/Documents/math-render-check.txt" build/math-render-check.txt
 cat build/math-render-check.txt
 grep -q '^PASS:' build/math-render-check.txt
 xcrun simctl io "$DEVICE" screenshot build/formula-simulator.png
+xcrun simctl terminate "$DEVICE" org.local.scientificcalculator.personal
+xcrun simctl launch "$DEVICE" org.local.scientificcalculator.personal --calculator-number-check
+for attempt in {1..30}; do
+  [[ -f "$CONTAINER/Documents/number-render-check.txt" ]] && break
+  sleep 2
+done
+cp "$CONTAINER/Documents/number-render-check.txt" build/number-render-check.txt
+cat build/number-render-check.txt
+grep -q '^PASS:' build/number-render-check.txt
+xcrun simctl io "$DEVICE" screenshot build/number-simulator.png
+xcrun simctl terminate "$DEVICE" org.local.scientificcalculator.personal
+xcrun simctl launch "$DEVICE" org.local.scientificcalculator.personal --calculator-draft-check
+sleep 3
+xcrun simctl io "$DEVICE" screenshot build/draft-simulator.png
 echo 'Unsigned IPA and simulator launch completed. Real iPhone signing, gestures, login and inference remain unverified.'

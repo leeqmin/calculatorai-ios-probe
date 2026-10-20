@@ -8,7 +8,15 @@
 'use strict';
 function showAnswer(value){
  const answer=document.getElementById('answer'); answer.replaceChildren(); answer.style.transform='none';
- const source=String(value).slice(0,256000); const regex=/\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)|\$\$([\s\S]*?)\$\$|\$([^$\n]+)\$/g;
+ const source=String(value).slice(0,256000);
+ // Bare numeric answers and calculator values use precisely the same KaTeX
+ // font as delimited math, including idle/pending zero. Preserve typed decimals.
+ if(/^[+\-−]?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?$/.test(source)){
+  const math=source.replace('−','-').replace(/([eE])([+\-]?\d+)$/, '\\mathrm{e}$2');
+  katex.render(math,answer,{displayMode:false,throwOnError:false,trust:false,strict:'ignore',maxExpand:300,maxSize:10});
+  requestAnimationFrame(fit);return;
+ }
+ const regex=/\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)|\$\$([\s\S]*?)\$\$|\$([^$\n]+)\$/g;
  let previous=0, match, count=0;
  while((match=regex.exec(source))&&count++<100){
   answer.append(document.createTextNode(source.slice(previous,match.index)));

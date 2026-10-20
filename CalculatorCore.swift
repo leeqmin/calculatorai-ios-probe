@@ -159,6 +159,62 @@ enum CalculatorKeys {
     static let secret = ["ln", "n!", "mod", "ln"]
 }
 
+// Shared by the native field and the calculator keypad. Selection is UIKit's
+// UTF-16 range, never a Character offset (Korean composition/emoji may differ).
+struct QuestionDraft {
+    var text: String
+    var selection: NSRange
+
+    init(_ text: String = "", selection: NSRange? = nil) {
+        self.text = text
+        self.selection = selection ?? NSRange(location: text.utf16.count, length: 0)
+    }
+    private var range: Range<String.Index> {
+        Range(selection, in: text) ?? text.endIndex..<text.endIndex
+    }
+    @discardableResult mutating func press(_ key: String) -> Bool {
+        let target = range
+        if key == "CE" { text = ""; selection = NSRange(location: 0, length: 0); return true }
+        if key == "⌫" {
+            if !target.isEmpty { replace(target, with: ""); return true }
+            guard target.lowerBound > text.startIndex else { return false }
+            replace(text.index(before: target.lowerBound)..<target.lowerBound, with: ""); return true
+        }
+        let selected = String(text[target])
+        let insertion: String
+        var inside = false
+        switch key {
+        case "sin", "cos", "tan", "ln": insertion = key + "(" + selected + ")"; inside = selected.isEmpty
+        case "log": insertion = "log10(" + selected + ")"; inside = selected.isEmpty
+        case "√x": insertion = "sqrt(" + selected + ")"; inside = selected.isEmpty
+        case "|x|": insertion = "abs(" + selected + ")"; inside = selected.isEmpty
+        case "⌊x⌋": insertion = "floor(" + selected + ")"; inside = selected.isEmpty
+        case "⌈x⌉": insertion = "ceil(" + selected + ")"; inside = selected.isEmpty
+        case "1/x": insertion = "1/(" + selected + ")"; inside = selected.isEmpty
+        case "10ˣ": insertion = "10^(" + selected + ")"; inside = selected.isEmpty
+        case "eˣ": insertion = "e^(" + selected + ")"; inside = selected.isEmpty
+        case "xʸ": insertion = (selected.isEmpty ? "" : "(" + selected + ")") + "^()"; inside = true
+        case "x²": insertion = selected.isEmpty ? "²" : "(" + selected + ")²"
+        case "x³": insertion = selected.isEmpty ? "³" : "(" + selected + ")³"
+        case "n!": insertion = selected.isEmpty ? "!" : "(" + selected + ")!"
+        case "±": insertion = "-(" + selected + ")"; inside = selected.isEmpty
+        case "mod": insertion = " mod "
+        case "+", "−", "×", "÷", "%", ".", "π", "e": insertion = key
+        default:
+            guard key.count == 1, let first = key.first, first.isNumber else { return false }
+            insertion = key
+        }
+        guard text.count - selected.count + insertion.count <= 32_000 else { return false }
+        replace(target, with: insertion, caretBack: inside ? 1 : 0)
+        return true
+    }
+    private mutating func replace(_ target: Range<String.Index>, with value: String, caretBack: Int = 0) {
+        let start = target.lowerBound.utf16Offset(in: text)
+        text.replaceSubrange(target, with: value)
+        selection = NSRange(location: start + value.utf16.count - caretBack, length: 0)
+    }
+}
+
 struct HiddenSequence {
     private(set) var index = 0
     private var began = TimeInterval.zero

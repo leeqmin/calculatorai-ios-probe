@@ -15,6 +15,11 @@ import WebKit
     lazy var connection = ChatGPTConnection()
     private var sequence = HiddenSequence()
     private var snapshot: ScientificEngine?
+    private var draftSnapshot: (text: String, selection: NSRange, pages: [String], page: Int)?
+    private var draftSelection = NSRange(location: 0, length: 0)
+    private var syncingField = false
+    // Weak, view-owned reference: no new keyboard/clipboard/auth path.
+    weak var inputField: UITextField?
     private var lastEquals: TimeInterval?
     private var equalsTask: Task<Void, Never>?
     private var answerTask: Task<Void, Never>?
@@ -25,20 +30,25 @@ import WebKit
     var answer: String { pages.isEmpty ? "0" : pages[min(page, pages.count - 1)] }
 
     func press(_ key: String) {
+        if ai && !pending { commitField() }
         let now = ProcessInfo.processInfo.systemUptime
         let before = engine
+        let beforeDraft = (text: draft, selection: draftSelection, pages: pages, page: page)
         let oldIndex = sequence.index
         if sequence.accept(key, now: now) {
             if let snapshot { engine = snapshot }
-            snapshot = nil; keyboard = false; equalsTask?.cancel(); lastEquals = nil; settings = true; return
+            if ai, let saved = draftSnapshot {
+                draft = saved.text; draftSelection = saved.selection; pages = saved.pages; page = saved.page; syncField()
+            }
+            snapshot = nil; draftSnapshot = nil; keyboard = false; equalsTask?.cancel(); lastEquals = nil; settings = true; return
         }
-        if sequence.index == 1, (oldIndex == 0 || key == "ln") { snapshot = before }
-        if sequence.index == 0 { snapshot = nil }
+        if sequence.index == 1, (oldIndex == 0 || key == "ln") { snapshot = before; draftSnapshot = beforeDraft }
+        if sequence.index == 0 { snapshot = nil; draftSnapshot = nil }
         if key == "C" { clear(); return }
         if key == "=" {
             if let previous = lastEquals, now - previous <= 0.33 {
                 equalsTask?.cancel(); equalsTask = nil; lastEquals = nil
-                if !ai { ai = true; pages = []; page = 0; draft = "" }
+                if !ai { ai = true; pages = []; page = 0; draft = ""; draftSelection = NSRange(location: 0, length: 0); syncField() }
                 return
             }
             lastEquals = now; equalsTask?.cancel()
@@ -54,13 +64,41 @@ import WebKit
         if !ai {
             if lastEquals != nil { equalsTask?.cancel(); engine.press("="); lastEquals = nil }
             engine.press(key)
+        } else if !pending {
+            var editor = QuestionDraft(draft, selection: draftSelection)
+            if editor.press(key) {
+                draft = editor.text; draftSelection = editor.selection; pages = []; page = 0; syncField()
+            }
         }
+    }
+    private func commitField() {
+        guard let field = inputField, field.isFirstResponder else { return }
+        field.unmarkText()
+        fieldChanged(field)
+    }
+    func fieldChanged(_ field: UITextField) {
+        guard ai, !pending, !syncingField else { return }
+        let text = field.text ?? ""
+        if draft != text { draft = text; pages = []; page = 0 }
+        if let range = field.selectedTextRange {
+            draftSelection = NSRange(location: field.offset(from: field.beginningOfDocument, to: range.start),
+                                     length: field.offset(from: range.start, to: range.end))
+        }
+    }
+    private func syncField() {
+        guard let field = inputField else { return }
+        syncingField = true; defer { syncingField = false }
+        let selection = draftSelection
+        field.text = draft
+        if let start = field.position(from: field.beginningOfDocument, offset: selection.location),
+           let end = field.position(from: start, offset: selection.length) { field.selectedTextRange = field.textRange(from: start, to: end) }
     }
     func clear() {
         if pending { connection.cancelQuestion() }
         generation = UUID(); answerTask?.cancel(); answerTask = nil; equalsTask?.cancel(); equalsTask = nil
-        lastEquals = nil; sequence.reset(); snapshot = nil
+        lastEquals = nil; sequence.reset(); snapshot = nil; draftSnapshot = nil
         pending = false; keyboard = false; ai = false; draft = ""; pages = []; page = 0; engine.clear()
+        draftSelection = NSRange(location: 0, length: 0); syncField()
     }
     func edit() { if ai && !pending { keyboard = true } }
     func swipe(_ translation: CGSize) {
@@ -69,6 +107,7 @@ import WebKit
         page = min(max(0, page + (translation.width < 0 ? 1 : -1)), max(0, pages.count - 1))
     }
     func sendDraft() {
+        commitField()
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard ai, !pending, !text.isEmpty else { return }
         send(AIInput(text: text, image: nil, imageType: nil))
@@ -93,6 +132,7 @@ import WebKit
     }
     private func send(_ input: AIInput) {
         guard ai, !pending else { return }
+        draft = input.image == nil ? input.text : ""; draftSelection = NSRange(location: draft.utf16.count, length: 0); syncField()
         pending = true; keyboard = false; pages = []; page = 0
         let diagnosticID = connection.beginQuestion()
         let transaction = UUID(); generation = transaction
@@ -108,7 +148,7 @@ import WebKit
                 text = try await self.connection.answer(input, diagnosticID: diagnosticID)
                 #endif
                 guard !Task.isCancelled, self.generation == transaction, self.ai else { return }
-                self.pages = AnswerPages.split(text); self.page = 0; self.draft = ""
+                self.pages = AnswerPages.split(text); self.page = 0
                 self.connection.finishQuestion(diagnosticID)
             } catch {
                 if self.generation == transaction { self.connection.finishQuestion(diagnosticID, error: error) }
@@ -120,6 +160,12 @@ import WebKit
         if ProcessInfo.processInfo.arguments.contains("--calculator-render-check") {
             ai = true; pages = ["\\(\\displaystyle \\frac{1}{x}\\)"]; page = 0; return
         }
+        if ProcessInfo.processInfo.arguments.contains("--calculator-draft-check") {
+            ai = true; draft = "sin(30)의 값과 2²의 합을 알려줘"; syncField(); return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--calculator-number-check") {
+            for key in ["1", "2", "3", "4", "5", ".", "6", "7"] { engine.press(key) }; return
+        }
         guard ProcessInfo.processInfo.arguments.contains("--calculator-self-check") else { return }
         var passed = 0, errors: [String] = []
         func check(_ ok: Bool, _ label: String) { if ok { passed += 1 } else { errors.append(label) } }
@@ -128,15 +174,34 @@ import WebKit
         check(engine.value == 5, "normal equals")
         press("="); press("="); check(ai, "double equals enters")
         press("="); press("="); check(ai, "double equals idempotent")
-        let saved = engine.entry; press("7"); press("sin"); press("MS"); press("DEG")
-        check(engine.entry == saved && !engine.hasMemory && engine.degrees, "AI keypad isolated")
+        let saved = engine.entry; press("7"); press("+"); press("sin"); press("3"); press("0"); press("MS"); press("DEG")
+        check(engine.entry == saved && !engine.hasMemory && engine.degrees && draft == "7+sin(30)", "AI keypad edits only question")
+        let intact = draft; press("="); press("="); check(draft == intact, "AI reentry preserves typed formula")
+        for key in CalculatorKeys.secret { press(key) }
+        check(settings && draft == intact, "AI settings sequence restores question and caret"); settings = false
+        press("CE"); check(draft.isEmpty && ai && answer == "0", "CE clears only AI question")
+        press("1"); press("2"); press("⌫"); check(draft == "1", "AI keypad backspace")
+        if let field = inputField {
+            field.text = "한글 👨‍👩‍👧‍👦 질문"; fieldChanged(field)
+            let at = "한글 👨‍👩‍👧‍👦 ".utf16.count
+            if let start = field.position(from: field.beginningOfDocument, offset: at),
+               let end = field.position(from: start, offset: 2) { field.selectedTextRange = field.textRange(from: start, to: end) }
+            fieldChanged(field); press("ln")
+            check(draft == "한글 👨‍👩‍👧‍👦 ln(질문)", "native field selection mixed Korean/emoji wraps correctly")
+            field.text = "한글 "; field.selectedTextRange = field.textRange(from: field.endOfDocument, to: field.endOfDocument)
+            field.setMarkedText("조합", selectedRange: NSRange(location: 2, length: 0)); fieldChanged(field)
+            check(draft.contains("조합"), "marked Korean is visible in draft")
+            field.unmarkText(); fieldChanged(field); press("+")
+            check(draft == "한글 조합+", "committed Korean preserved with keypad insertion")
+        } else { check(false, "native keyboard field mounted") }
         edit(); check(keyboard, "AI keyboard opens")
         var count = 0
         syntheticResponder = { _ in count += 1; try await Task.sleep(nanoseconds: 120_000_000); return "\\(\\frac{1}{x}\\)\n2" }
         draft = "synthetic ln(x) derivative"; sendDraft(); sendDraft()
-        check(pending && answer == "0" && !keyboard, "pending 0 and duplicate guard")
+        let sentDraft = draft; press("9"); press("CE")
+        check(pending && answer == "0" && !keyboard && draft == sentDraft, "pending 0 and duplicate/edit guard")
         try? await Task.sleep(nanoseconds: 220_000_000)
-        check(!pending && pages.count == 2 && count == 1, "one request and final pages")
+        check(!pending && pages.count == 2 && count == 1 && draft == sentDraft, "one request and final pages with question retained")
         swipe(CGSize(width: -70, height: 0)); check(answer == "2", "swipe next")
         swipe(CGSize(width: 70, height: 0)); check(answer.contains("frac"), "swipe previous")
         press("="); press("="); check(pages.count == 2, "AI reentry preserves answer")
@@ -202,22 +267,17 @@ struct CalculatorScreen: View {
                 HStack { Text("공학용").font(.system(size: 20, weight: .semibold)); Spacer() }
                     .frame(height: compact ? 32 : 42).padding(.horizontal, 12)
                 ZStack(alignment: .bottomTrailing) {
-                    if !model.ai {
-                        VStack(alignment: .trailing, spacing: 8) {
-                            Text(model.engine.expression).font(.system(size: 13)).foregroundStyle(.gray).lineLimit(1).minimumScaleFactor(0.35)
-                            Spacer(minLength: 0)
-                            Text(model.engine.display).font(.system(size: 42, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.2)
-                                .accessibilityIdentifier("calculator-display")
-                        }.padding(12).frame(maxWidth: .infinity, alignment: .trailing)
-                    } else if model.pending || model.pages.isEmpty {
-                        VStack { Spacer(minLength: 0); HStack { Spacer(minLength: 0); Text("0").font(.system(size: 42, weight: .semibold)) } }
-                            .padding(12).accessibilityLabel("0").accessibilityIdentifier("calculator-display")
-                    } else {
-                        FormulaDisplay(text: model.answer).padding(12)
-                            .accessibilityLabel(model.answer)
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Text(model.ai ? model.draft : model.engine.expression)
+                            .font(.system(size: model.ai ? 9 : 13)).foregroundStyle(.gray)
+                            .lineLimit(1).truncationMode(.head)
+                            .frame(maxWidth: .infinity, minHeight: 18, maxHeight: 18, alignment: .trailing)
+                            .accessibilityIdentifier("calculator-expression")
+                        FormulaDisplay(text: model.ai ? model.answer : model.engine.display)
+                            .accessibilityLabel(model.ai ? model.answer : model.engine.display)
                             .accessibilityIdentifier("calculator-display")
-                    }
-                    SendKeyboard(text: $model.draft, active: $model.keyboard, onSend: model.sendDraft)
+                    }.padding(12)
+                    SendKeyboard(model: model)
                         .frame(width: 1, height: 1).opacity(0.02).accessibilityHidden(true)
                 }
                 .frame(maxWidth: .infinity).frame(height: compact ? 90 : 128)
@@ -273,9 +333,7 @@ struct CalculatorButtonStyle: ButtonStyle {
 }
 
 struct SendKeyboard: UIViewRepresentable {
-    @Binding var text: String
-    @Binding var active: Bool
-    let onSend: () -> Void
+    @ObservedObject var model: CalculatorModel
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextField {
         let view = UITextField(); view.returnKeyType = .send; view.delegate = context.coordinator
@@ -283,23 +341,25 @@ struct SendKeyboard: UIViewRepresentable {
         view.textColor = .clear; view.tintColor = .clear; view.keyboardAppearance = .dark
         view.inputAssistantItem.leadingBarButtonGroups = []; view.inputAssistantItem.trailingBarButtonGroups = []
         view.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .editingChanged)
+        model.inputField = view
         return view
     }
     func updateUIView(_ view: UITextField, context: Context) {
         context.coordinator.parent = self
-        if view.markedTextRange == nil, view.text != text { view.text = text }
-        if active, !view.isFirstResponder { DispatchQueue.main.async { if context.coordinator.parent.active { view.becomeFirstResponder() } } }
-        if !active, view.isFirstResponder { view.resignFirstResponder() }
+        if view.markedTextRange == nil, view.text != model.draft { view.text = model.draft }
+        if model.keyboard, !view.isFirstResponder { DispatchQueue.main.async { if context.coordinator.parent.model.keyboard { view.becomeFirstResponder() } } }
+        if !model.keyboard, view.isFirstResponder { view.resignFirstResponder() }
     }
     class Coordinator: NSObject, UITextFieldDelegate {
         var parent: SendKeyboard
         init(_ parent: SendKeyboard) { self.parent = parent }
-        @objc func changed(_ field: UITextField) { parent.text = field.text ?? "" }
+        @objc func changed(_ field: UITextField) { parent.model.fieldChanged(field) }
+        func textFieldDidChangeSelection(_ field: UITextField) { parent.model.fieldChanged(field) }
         func textFieldShouldReturn(_ field: UITextField) -> Bool {
-            field.unmarkText(); parent.text = field.text ?? ""
-            DispatchQueue.main.async { self.parent.onSend() }; return false
+            field.unmarkText(); parent.model.fieldChanged(field)
+            DispatchQueue.main.async { self.parent.model.sendDraft() }; return false
         }
-        func textFieldDidEndEditing(_ field: UITextField) { parent.active = false }
+        func textFieldDidEndEditing(_ field: UITextField) { parent.model.keyboard = false }
     }
 }
 
@@ -325,13 +385,32 @@ struct FormulaDisplay: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             loaded = true; render()
             #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--calculator-render-check") {
+            let mathCheck = ProcessInfo.processInfo.arguments.contains("--calculator-render-check")
+            let numberCheck = ProcessInfo.processInfo.arguments.contains("--calculator-number-check")
+            if mathCheck || numberCheck {
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    webView.evaluateJavaScript("!!document.querySelector('.katex .mfrac') && document.getElementById('answer').getBoundingClientRect().width <= document.getElementById('box').clientWidth + 1") { value, error in
-                        let report = error == nil && value as? Bool == true ? "PASS: offline KaTeX fraction rendered and fit the display." : "FAIL: offline renderer"
+                    let restore = numberCheck ? "12345.67" : "\\(\\displaystyle \\frac{1}{x}\\)"
+                    let serialized = try! String(data: JSONSerialization.data(withJSONObject: [restore]), encoding: .utf8)!
+                    let script = """
+                    (() => {
+                      const a=document.getElementById('answer'),b=document.getElementById('box');
+                      let ok=true;
+                      for(const n of ['0','12.30','001.','-3','1e+28','123456789012345678']){
+                        showAnswer(n);fit();ok=ok&&!!a.querySelector('.katex')&&a.getBoundingClientRect().width<=b.clientWidth+1;
+                      }
+                      showAnswer('12.30');const ordinary=getComputedStyle(a.querySelector('.katex')).fontFamily;
+                      showAnswer('\\\\(12.30\\\\)');ok=ok&&getComputedStyle(a.querySelector('.katex')).fontFamily===ordinary;
+                      showAnswer('<img src=x onerror=alert(1)>');ok=ok&&!a.querySelector('img');
+                      showAnswer((\(serialized))[0]);fit();
+                      return ok&&!!a.querySelector('.katex')&&a.getBoundingClientRect().width<=b.clientWidth+1
+                        &&a.getBoundingClientRect().height<=b.clientHeight+1\(mathCheck ? "&&!!a.querySelector('.mfrac')" : "");
+                    })()
+                    """
+                    webView.evaluateJavaScript(script) { value, error in
+                        let report = error == nil && value as? Bool == true ? "PASS: offline shared KaTeX numeric/font/fit/safe-text checks; final display rendered." : "FAIL: offline shared renderer"
                         if let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                            try? report.write(to: folder.appendingPathComponent("math-render-check.txt"), atomically: true, encoding: .utf8)
+                            try? report.write(to: folder.appendingPathComponent(numberCheck ? "number-render-check.txt" : "math-render-check.txt"), atomically: true, encoding: .utf8)
                         }
                     }
                 }
@@ -392,7 +471,7 @@ struct ConnectionSettings: View {
                     }
                     Text("질문·사진·답변·로그인 비밀은 진단 기록에 포함하지 않습니다. 이 기록은 앱 메모리에만 남고 모델 조회로 덮어쓰지 않습니다.")
                 }.font(.footnote).textSelection(.enabled)
-                Section("앱 버전") { Text("공학용 계산기 1.0.2 · 응답 형식 판별 보완") }.font(.footnote)
+                Section("앱 버전") { Text("공학용 계산기 1.0.3 · 글꼴 통일·질문 표시·수식 입력") }.font(.footnote)
                 Section("사용량·개인정보") {
                     Text("AI는 ChatGPT 플랜의 사용량·한도를 공유합니다. 별도의 무료 무제한 사용권이 아닙니다. API 요금 결제나 키 입력은 하지 않습니다.")
                     Text("계정 토큰은 이 기기의 Keychain에만 저장합니다. 질문과 사진은 전송할 때 OpenAI로 직접 보냅니다. 대화는 앱 메모리에만 있으며 서버 저장은 요청하지 않습니다. 앱 자체 분석·광고·원격 로그는 없습니다.")
@@ -401,7 +480,7 @@ struct ConnectionSettings: View {
                     Link("공개 소스·검증 범위", destination: URL(string: "https://github.com/leeqmin/calculatorai-ios-probe")!)
                 }.font(.footnote)
                 Section("조작") {
-                    Text("= 두 번: AI 진입 · C: 취소하고 계산기로\nAI에서 화면 두 번: 키보드 · 길게: 텍스트/사진 붙여넣고 전송\n키보드 전송: 질문 보내기 · 화면 한 번/아래 스와이프: 키보드 닫기\n화면 좌우 스와이프: 답 넘기기\n설정: ln → n! → mod → ln (4초 이내)").font(.footnote)
+                    Text("= 두 번: AI 진입 · C: 취소하고 계산기로\nAI에서 숫자·함수 버튼: 질문에 수식 입력 · CE: 질문 비우기 · ⌫: 한 글자 지우기\nAI에서 화면 두 번: 키보드 · 길게: 텍스트/사진 붙여넣고 전송\n위쪽 작은 줄: 질문·수식 미리보기(길면 끝부분 표시)\n키보드 전송: 질문 보내기 · 화면 한 번/아래 스와이프: 키보드 닫기\n화면 좌우 스와이프: 답 넘기기\n설정: ln → n! → mod → ln (4초 이내)").font(.footnote)
                 }
             }
             .navigationTitle("설정").navigationBarTitleDisplayMode(.inline)

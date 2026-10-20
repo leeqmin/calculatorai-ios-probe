@@ -50,6 +50,7 @@ import CryptoKit
         check(!seq.accept("ln", now: 4), "sequence reset")
         check(!seq.accept("n!", now: 9), "sequence timeout")
         check(!seq.accept("mod", now: 10), "sequence timeout cannot complete")
+        draftChecks()
         check(AnswerPages.split("a\nb\nc") == ["a", "b", "c"], "answer pagination")
         check(AnswerPages.split("\\begin{cases}\na & x>0\\\\\nb & x<0\n\\end{cases}").count == 1, "cases atomic")
         check(AnswerPages.split(" \n ").isEmpty, "empty answer")
@@ -94,6 +95,32 @@ import CryptoKit
         rejects("oversized question") { _ = try ResponseRequest.data(model: "test", input: AIInput(text: String(repeating: "a", count: 32001), image: nil, imageType: nil)) }
         try await responseChecks()
         print("PASS: \(passed) synthetic core checks; URLSession fixture checks passed. Foundation lines blank separators: \(legacyBlanks). No real account, clipboard, external network or device used.")
+    }
+    static func draftChecks() {
+        var d = QuestionDraft()
+        for key in ["sin", "3", "0"] { d.press(key) }
+        check(d.text == "sin(30)" && d.selection.location == 6, "function inserts caret inside parentheses")
+        d = QuestionDraft("한글 👨‍👩‍👧‍👦 12 부탁", selection: NSRange(location: "한글 👨‍👩‍👧‍👦 ".utf16.count, length: 2))
+        d.press("x²"); check(d.text == "한글 👨‍👩‍👧‍👦 (12)² 부탁", "selected operand wraps with Korean and emoji prefix")
+        for (key, expected) in [("sin", "sin(x)"), ("cos", "cos(x)"), ("tan", "tan(x)"), ("ln", "ln(x)"), ("log", "log10(x)"),
+                                ("√x", "sqrt(x)"), ("|x|", "abs(x)"), ("⌊x⌋", "floor(x)"), ("⌈x⌉", "ceil(x)"),
+                                ("1/x", "1/(x)"), ("10ˣ", "10^(x)"), ("eˣ", "e^(x)"), ("n!", "(x)!"),
+                                ("x³", "(x)³"), ("±", "-(x)"), ("xʸ", "(x)^()")] {
+            d = QuestionDraft("x", selection: NSRange(location: 0, length: 1)); d.press(key)
+            check(d.text == expected, "formula key " + key)
+        }
+        d = QuestionDraft("A👨‍👩‍👧‍👦"); d.press("⌫"); check(d.text == "A", "backspace deletes a whole grapheme")
+        d = QuestionDraft("한"); d.press("⌫"); check(d.text.isEmpty, "backspace deletes decomposed Korean syllable")
+        d = QuestionDraft("ab", selection: NSRange(location: 0, length: 2)); d.press("⌫"); check(d.text.isEmpty, "backspace deletes selection")
+        check(!d.press("⌫"), "empty backspace no-op")
+        d = QuestionDraft("abc", selection: NSRange(location: 99, length: 8)); d.press("3"); check(d.text == "abc3", "stale range safely appends")
+        for key in ["=", "C", "MS", "MC", "MR", "M+", "M−", "M⌄", "DEG", "unknown"] {
+            check(!d.press(key) && d.text == "abc3", "no calculator/memory side effects " + key)
+        }
+        d = QuestionDraft(String(repeating: "가", count: 32_000)); check(!d.press("1") && d.text.count == 32_000, "keypad draft length bound")
+        d.press("CE"); check(d.text.isEmpty && d.selection.location == 0, "CE clears text and selection")
+        d = QuestionDraft(); for key in ["1", ".", "2", "+", "π", "×", "e", "÷", "3", "mod", "2", "%", "−", "0"] { d.press(key) }
+        check(d.text == "1.2+π×e÷3 mod 2%−0", "literal keypad symbols stay visible")
     }
     static var legacyBlanks = 0
     static func fixtureStage(_ name: String) { FileHandle.standardError.write(Data(("Synthetic fixture: " + name + "\n").utf8)) }
