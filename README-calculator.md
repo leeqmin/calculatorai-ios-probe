@@ -2,6 +2,12 @@
 
 New actual calculator, separate from the old synthetic CalculatorProbe. Own newly authored files are MIT licensed (LICENSE-calculator). Bundled KaTeX retains its own MIT license in KaTeX-vendor.zip/katex/LICENSE. No credentials or device identifiers belong in this repository.
 
+### 1.0.1 response-reception update
+
+Read SSE from raw bytes with preserved blank-line boundaries (LF/CRLF/CR), fragmented UTF-8, BOM and multiline data handling. Return only after a validated `response.completed`, immediately without waiting for socket EOF; incomplete streams never display partial text. Each inference has its own cancellable session. Settings retain the latest question stage, bounded HTTP/content-type/event counts, request ID and sanitized error code/parameter separately from model-loading status. Raw bodies/messages, questions, answers and credentials are never diagnostic records; diagnostics are in-memory only. The main display/gestures and Keychain service/bundle ID remain unchanged.
+
+The core checks now exercise the production reader through a private ephemeral URLSession/URLProtocol fixture, including an open stream after completion, failures, malformed/truncated SSE, framing and non-SSE responses. No real account or external request is used. Real inference on the user's phone is still a required acceptance test; this revision does not claim to have fixed the live-account failure until that test passes.
+
 ## Independent offline calculator
 
 5×8 Windows-style scientific keypad, immediate-execution decimal arithmetic, memory, degrees/radians, trigonometry, logarithms, powers, factorial, remainder, floor/ceiling. This is not a symbolic algebra engine. No login or network is needed for these functions.

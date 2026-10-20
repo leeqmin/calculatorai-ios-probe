@@ -14,7 +14,7 @@ import CryptoKit
     static func near(_ keys: [String], _ expected: Double) {
         check(abs(NSDecimalNumber(decimal: engine(keys).value).doubleValue - expected) < 1e-10, keys.joined(separator: " "))
     }
-    static func main() throws {
+    @MainActor static func main() async throws {
         check(engine(["0", ".", "1", "+", "0", ".", "2", "="]).display == "0.3", "exact decimal")
         check(engine(["2", "+", "3", "=", "="]).value == 8, "repeat equals")
         check(engine(["2", "+", "3", "×", "4", "="]).value == 20, "immediate execution parity")
@@ -92,7 +92,64 @@ import CryptoKit
         for unsupported in ["max_output_tokens", "temperature", "previous_response_id", "background"] { check(body[unsupported] == nil, "omit unsupported " + unsupported) }
         rejects("empty question") { _ = try ResponseRequest.data(model: "test", input: AIInput(text: "", image: nil, imageType: nil)) }
         rejects("oversized question") { _ = try ResponseRequest.data(model: "test", input: AIInput(text: String(repeating: "a", count: 32001), image: nil, imageType: nil)) }
-        print("PASS: \(passed) synthetic core checks. No account, clipboard, network or device used.")
+        try await responseChecks()
+        print("PASS: \(passed) synthetic core checks; URLSession fixture checks passed. Foundation lines blank separators: \(legacyBlanks). No real account, clipboard, external network or device used.")
+    }
+    static var legacyBlanks = 0
+    @MainActor static func responseChecks() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ResponseFixture.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        func read(_ path: String) async throws -> String {
+            let (bytes, response) = try await session.bytes(from: URL(string: "https://calculator-fixture.invalid/" + path)!)
+            return try await ResponseReader.read(bytes, response: response)
+        }
+        let (legacy, _) = try await session.bytes(from: URL(string: "https://calculator-fixture.invalid/good")!)
+        for try await line in legacy.lines { if line.isEmpty { legacyBlanks += 1 } }
+        let normal = try await read("good")
+        check(normal == "2", "production URLSession bytes LF framing")
+        for path in ["crlf", "cr", "multiline", "bom", "unicode"] {
+            let answer = try await read(path)
+            check(answer == (path == "unicode" ? "정답 2" : "2"), "byte chunk fixture " + path)
+        }
+        // This fixture deliberately never signals socket EOF. A missing early
+        // return would hang; the bounded timeout fails the check instead.
+        let open = try await withThrowingTaskGroup(of: String.self) { group in
+            group.addTask {
+                let (bytes, response) = try await session.bytes(from: URL(string: "https://calculator-fixture.invalid/open")!)
+                return try await ResponseReader.read(bytes, response: response)
+            }
+            group.addTask { try await Task.sleep(nanoseconds: 10_000_000_000); throw SafeFailure.timeout }
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
+        check(open == "2", "completed response returns without EOF")
+        for (path, reason) in [("truncated", ResponseIssue.Reason.missingCompletion), ("malformed", .malformed),
+                              ("failed", .failed), ("incomplete", .incomplete), ("json", .contentType), ("denied", .http)] {
+            do { _ = try await read(path); fatalError("CHECK FAILED (accepted): " + path) }
+            catch let issue as ResponseIssue {
+                check(issue.reason == reason, "specific response failure " + path)
+                if path == "failed" || path == "denied" {
+                    check(issue.code == "subscription_sharing_user_not_eligible", "sanitized server code " + path)
+                }
+            }
+        }
+        var diagnostic = QuestionDiagnostic(); diagnostic.begin()
+        diagnostic.fail(ResponseIssue(reason: .missingCompletion))
+        let saved = diagnostic.failure
+        check(saved != nil && diagnostic.terminal, "question error retained independently of model status")
+        check(DiagnosticMetadata.identifier("Bearer secret") == nil, "diagnostic rejects bearer")
+        check(DiagnosticMetadata.identifier("sk-synthetic-not-a-real-key") == nil, "diagnostic rejects secret prefix")
+        check(DiagnosticMetadata.identifier("eyJsynthetic") == nil, "diagnostic rejects JWT prefix")
+        check(DiagnosticMetadata.identifier(String(repeating: "x", count: 129)) == nil, "bounded metadata")
+        check(DiagnosticMetadata.requestID("req_synthetic_123") == "req_synthetic_123", "request ID accepted")
+        check(DiagnosticMetadata.requestID("private input") == nil, "arbitrary request ID excluded")
+        check(DiagnosticMetadata.mediaType("text/event-stream; charset=utf-8") == "text/event-stream", "SSE content type parameters")
+        check(DiagnosticMetadata.mediaType("private input") == "기타/없음", "arbitrary content type excluded")
+        let safe = ResponseIssue.server(["error": ["code": "synthetic_failure", "message": "PRIVATE SYNTHETIC QUESTION"]], reason: .failed)
+        diagnostic.fail(safe)
+        check(diagnostic.failure?.contains("synthetic_failure") == true && diagnostic.failure?.contains("PRIVATE") == false, "raw server messages excluded")
     }
     static func jwtChecks() throws {
         let privateKey = SecKeyCreateRandomKey([kSecAttrKeyType: kSecAttrKeyTypeRSA, kSecAttrKeySizeInBits: 2048] as CFDictionary, nil)!
@@ -130,4 +187,37 @@ import CryptoKit
         let parts = token.split(separator: ".").map(String.init)
         rejects("modified payload") { _ = try IDTokenVerifier.verify(parts[0] + "." + OAuthContract.base64url(Data("{}".utf8)) + "." + parts[2], keys: jwk, audience: aud, nonce: nonce) }
     }
+}
+
+// Only this ephemeral test session intercepts the reserved .invalid host.
+// No request can leave this process and no real credentials are ever used.
+final class ResponseFixture: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "calculator-fixture.invalid" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let path = request.url!.lastPathComponent
+        let completed = "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"2\"}]}]}}\n\n"
+        var body = "event: response.created\ndata: {\"type\":\"response.created\"}\n\n: heartbeat\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"2\"}\n\n" + completed
+        var status = 200, type = "text/event-stream; charset=utf-8"
+        switch path {
+        case "crlf": body = body.replacingOccurrences(of: "\n", with: "\r\n")
+        case "cr": body = body.replacingOccurrences(of: "\n", with: "\r")
+        case "bom": body = "\u{FEFF}" + body
+        case "unicode": body = body.replacingOccurrences(of: "\"text\":\"2\"", with: "\"text\":\"정답 2\"")
+        case "multiline": body = completed.replacingOccurrences(of: "\"response\":", with: "\n data: \"response\":").replacingOccurrences(of: "\n data:", with: "\ndata:")
+        case "truncated": body = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"2\"}\n\n"
+        case "malformed": body = "data: not-json\n\n"
+        case "failed": body = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_user_not_eligible\",\"message\":\"synthetic private text\"}}}\n\n"
+        case "incomplete": body = "data: {\"type\":\"response.incomplete\"}\n\n"
+        case "json": type = "application/json"; body = "{\"detail\":\"synthetic private text\"}"
+        case "denied": status = 403; type = "application/json"; body = "{\"error\":{\"code\":\"subscription_sharing_user_not_eligible\"}}"
+        default: break
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": type, "x-request-id": "req_synthetic_test"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        let bytes = Data(body.utf8)
+        for offset in stride(from: 0, to: bytes.count, by: 7) { client?.urlProtocol(self, didLoad: bytes.subdata(in: offset..<min(bytes.count, offset + 7))) }
+        if path != "open" { client?.urlProtocolDidFinishLoading(self) }
+    }
+    override func stopLoading() {}
 }

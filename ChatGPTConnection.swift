@@ -33,11 +33,14 @@ final class OfficialTransport: @unchecked Sendable {
     static let shared = OfficialTransport()
     let session: URLSession
     private init() {
+        session = Self.makeSession()
+    }
+    static func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil; configuration.httpCookieStorage = nil; configuration.httpShouldSetCookies = false
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.timeoutIntervalForRequest = 180; configuration.timeoutIntervalForResource = 240
-        session = URLSession(configuration: configuration, delegate: NoRedirect(), delegateQueue: nil)
+        return URLSession(configuration: configuration, delegate: NoRedirect(), delegateQueue: nil)
     }
     func data(_ request: URLRequest, maximum: Int = 2_000_000) async throws -> Data {
         let (bytes, response) = try await session.bytes(for: request)
@@ -159,6 +162,7 @@ final class OfficialTransport: @unchecked Sendable {
     @Published var selectedID: String? { didSet { try? SecureStore.write(Data((selectedID ?? "").utf8), key: "selected-account") } }
     @Published private(set) var models: [ModelOption] = []
     @Published private(set) var status = "기기에서 실제 로그인·AI 요청 확인이 필요합니다."
+    @Published private(set) var question = QuestionDiagnostic()
     @Published private(set) var busy = false
     @Published var showUsageNotice = false
     private var host = ""
@@ -309,29 +313,60 @@ final class OfficialTransport: @unchecked Sendable {
             status = "사용 가능한 모델 \(models.count)개. 실제 질문 전송은 별도 확인이 필요합니다."
         } catch { if generation == epoch { status = Self.safe(error).message } }
     }
-    func answer(_ input: AIInput) async throws -> String {
+    func beginQuestion() -> UUID { question.begin(); return question.id }
+    func cancelQuestion() {
+        guard question.started != nil, !question.terminal else { return }
+        question.stage = "취소됨"; question.terminal = true
+    }
+    func finishQuestion(_ id: UUID, error: Error? = nil) {
+        guard question.id == id, !question.terminal else { return }
+        if let error { question.fail(error) }
+        else { question.stage = "완료"; question.terminal = true }
+    }
+    func answer(_ input: AIInput, diagnosticID: UUID) async throws -> String {
+        func stage(_ text: String) {
+            if question.id == diagnosticID, !question.terminal { question.stage = text }
+        }
         guard let selected, selected.usageAcknowledged else { showUsageNotice = true; throw SafeFailure.loginRequired }
-        if models.isEmpty { await loadModels() }
+        if models.isEmpty { stage("모델 목록 확인"); await loadModels() }
+        try Task.checkCancellation()
         guard let slug = selectedModel, models.contains(where: { $0.slug == slug }) else { throw SafeFailure.modelRequired }
+        stage("인증 상태 확인")
         let credential = try await token(), generation = epoch, account = selectedID
+        try Task.checkCancellation()
         var request = URLRequest(url: URL(string: OAuthContract.resource + "/responses")!)
         request.httpMethod = "POST"; request.setValue("Bearer " + credential, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.httpBody = try ResponseRequest.data(model: slug, input: input)
-        let (bytes, response) = try await OfficialTransport.shared.session.bytes(for: request)
-        try OfficialTransport.validate(response)
-        guard (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true else { throw SafeFailure.incomplete }
-        var stream = ResponseStream(), total = 0
-        for try await line in bytes.lines {
-            try Task.checkCancellation(); guard epoch == generation, selectedID == account else { throw SafeFailure.cancelled }
-            total += line.utf8.count; guard total < 8_000_000 else { throw SafeFailure.tooLarge }
-            try stream.receive(line)
+        // A per-question session lets completion/C close only this stream, never
+        // a shared account refresh or newer request.
+        let session = OfficialTransport.makeSession()
+        defer { session.invalidateAndCancel() }
+        stage("서버 응답 대기")
+        let (bytes, response) = try await session.bytes(for: request)
+        guard epoch == generation, selectedID == account else { throw SafeFailure.cancelled }
+        if question.id == diagnosticID, !question.terminal {
+            question.stage = "응답 수신"
+            if let http = response as? HTTPURLResponse {
+                question.httpStatus = http.statusCode
+                question.mediaType = DiagnosticMetadata.mediaType(http.value(forHTTPHeaderField: "Content-Type"))
+                question.requestID = DiagnosticMetadata.requestID(http.value(forHTTPHeaderField: "x-request-id"))
+            }
         }
-        return try stream.finish()
+        let result = try await ResponseReader.read(bytes, response: response) { progress in
+            if self.question.id == diagnosticID, !self.question.terminal {
+                self.question.bytes = progress.bytes; self.question.events = progress.events
+                self.question.lastEvent = progress.lastEvent
+            }
+        }
+        try Task.checkCancellation()
+        guard epoch == generation, selectedID == account else { throw SafeFailure.cancelled }
+        return result
     }
     func recordFailure(_ error: Error) { status = Self.safe(error).message }
     static func safe(_ error: Error) -> SafeFailure {
         if error is CancellationError { return .cancelled }
+        if let issue = error as? ResponseIssue { return issue.failure }
         if let failure = error as? SafeFailure { return failure }
         if let network = error as? URLError, network.code == .timedOut { return .timeout }
         return .network

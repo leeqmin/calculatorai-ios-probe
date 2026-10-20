@@ -205,47 +205,201 @@ enum IDTokenVerifier {
     }
 }
 
+// Only bounded protocol metadata is retained. Never retain error messages/bodies,
+// questions, answers, bearer headers, account identifiers or tokens for diagnostics.
+enum DiagnosticMetadata {
+    static func identifier(_ value: Any?) -> String? {
+        guard let text = value as? String, !text.isEmpty, text.utf8.count <= 128,
+              !text.lowercased().hasPrefix("sk-"), !text.lowercased().hasPrefix("eyj"),
+              text.range(of: "^[A-Za-z0-9_][A-Za-z0-9_.\\[\\]-]*$", options: .regularExpression) != nil else { return nil }
+        return text
+    }
+    static func requestID(_ value: String?) -> String? {
+        guard let value, value.hasPrefix("req_"), let safe = identifier(value) else { return nil }; return safe
+    }
+    static func mediaType(_ value: String?) -> String {
+        let type = value?.split(separator: ";").first?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+        return ["text/event-stream", "application/json", "text/html", "text/plain"].contains(type) ? type : "기타/없음"
+    }
+}
+
+struct ResponseIssue: Error {
+    enum Reason: String {
+        case http = "서버가 요청을 거절함", contentType = "예상한 스트리밍 응답 형식이 아님"
+        case malformed = "응답 이벤트 해석 실패", missingCompletion = "완료 신호 없이 응답이 끝남"
+        case failed = "서버가 실패 이벤트를 보냄", incomplete = "서버가 미완료 이벤트를 보냄"
+        case empty = "완료 응답에 답이 없음", refusal = "모델이 답변을 거절함"
+    }
+    let reason: Reason
+    var code: String?
+    var parameter: String?
+    var bodyShape: String?
+    var failure: SafeFailure = .incomplete
+    static func server(_ object: [String: Any], reason: Reason, status: Int? = nil) -> ResponseIssue {
+        let response = object["response"] as? [String: Any]
+        let error = (object["error"] as? [String: Any]) ?? (response?["error"] as? [String: Any]) ?? object
+        let code = DiagnosticMetadata.identifier(error["code"])
+        let parameter = DiagnosticMetadata.identifier(error["param"])
+        let shape = object["error"] != nil ? "error" : (object["detail"] != nil ? "detail" : (response != nil ? "response" : "json"))
+        let failure: SafeFailure = status == 401 ? .loginRequired : (status == 429 || code == "subscription_sharing_usage_limit_exceeded" ? .rateLimit : .requestFailed)
+        return ResponseIssue(reason: reason, code: code, parameter: parameter, bodyShape: shape, failure: failure)
+    }
+}
+
+struct QuestionDiagnostic {
+    var id = UUID()
+    var started: Date?
+    var stage = "아직 전송한 질문이 없습니다."
+    var httpStatus: Int?
+    var mediaType: String?
+    var requestID: String?
+    var bytes = 0
+    var events = 0
+    var lastEvent: String?
+    var failure: String?
+    var terminal = false
+    mutating func begin() { self = QuestionDiagnostic(); started = Date(); stage = "전송 준비" }
+    mutating func fail(_ error: Error) {
+        terminal = true; stage = "실패"
+        if let issue = error as? ResponseIssue {
+            var parts = [issue.reason.rawValue]
+            if let code = issue.code { parts.append("코드: " + code) }
+            if let parameter = issue.parameter { parts.append("항목: " + parameter) }
+            if let shape = issue.bodyShape { parts.append("응답 구조: " + shape) }
+            failure = parts.joined(separator: " · ")
+        } else if let safe = error as? SafeFailure { failure = safe.message }
+        else if error is CancellationError { stage = "취소됨"; failure = nil }
+        else if let network = error as? URLError {
+            failure = network.code == .timedOut ? SafeFailure.timeout.message : "네트워크 오류 (\(network.errorCode))"
+        } else { failure = "요청 처리 오류" }
+    }
+}
+
 struct ResponseStream {
     private var eventLines: [String] = []
     private var accumulated = ""
     private(set) var answer: String?
-    private var complete = false
+    private(set) var complete = false
+    private(set) var events = 0
+    private(set) var lastEvent: String?
+    private var eventSize = 0
     mutating func receive(_ line: String) throws {
         guard line.utf8.count <= 2_000_000 else { throw SafeFailure.tooLarge }
         if line.isEmpty { try dispatch(); return }
-        if line.hasPrefix("data:") { eventLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)) }
+        if line.hasPrefix("data:") {
+            eventSize += line.utf8.count
+            guard eventSize <= 2_000_000 else { throw SafeFailure.tooLarge }
+            let value = line.dropFirst(5)
+            eventLines.append(String(value.first == " " ? value.dropFirst() : value))
+        }
     }
     private mutating func dispatch() throws {
         guard !eventLines.isEmpty else { return }
-        let data = eventLines.joined(separator: "\n"); eventLines.removeAll(keepingCapacity: true)
+        let data = eventLines.joined(separator: "\n"); eventLines.removeAll(keepingCapacity: true); eventSize = 0
         if data == "[DONE]" { return }
         guard let bytes = data.data(using: .utf8),
               let event = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-              let type = event["type"] as? String else { throw SafeFailure.incomplete }
+              let type = event["type"] as? String else { throw ResponseIssue(reason: .malformed) }
+        events += 1
+        // Never place arbitrary server strings into diagnostics.
+        lastEvent = ["response.created", "response.in_progress", "response.output_text.delta", "response.output_text.done",
+                     "response.completed", "response.failed", "response.incomplete", "error"].contains(type) ? type : "기타 이벤트"
         switch type {
         case "response.output_text.delta":
-            guard !complete else { throw SafeFailure.incomplete }
+            guard !complete else { throw ResponseIssue(reason: .malformed) }
             accumulated += event["delta"] as? String ?? ""
             guard accumulated.utf8.count < 256_000 else { throw SafeFailure.tooLarge }
         case "response.completed":
-            guard let response = event["response"] as? [String: Any], response["status"] as? String == "completed" else { throw SafeFailure.incomplete }
+            guard let response = event["response"] as? [String: Any], response["status"] as? String == "completed" else { throw ResponseIssue(reason: .malformed) }
             var final: [String] = []
             for item in response["output"] as? [[String: Any]] ?? [] where item["type"] as? String == "message" {
                 for content in item["content"] as? [[String: Any]] ?? [] {
                     if content["type"] as? String == "output_text", let text = content["text"] as? String { final.append(text) }
-                    if content["type"] as? String == "refusal" { throw SafeFailure.requestFailed }
+                    if content["type"] as? String == "refusal" { throw ResponseIssue(reason: .refusal, failure: .requestFailed) }
                 }
             }
             let text = (final.isEmpty ? accumulated : final.joined(separator: "\n")).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty, text.utf8.count < 256_000 else { throw SafeFailure.empty }
+            guard !text.isEmpty else { throw ResponseIssue(reason: .empty, failure: .empty) }
+            guard text.utf8.count < 256_000 else { throw SafeFailure.tooLarge }
             answer = text; complete = true
-        case "error", "response.failed", "response.incomplete": throw SafeFailure.requestFailed
+        case "error", "response.failed": throw ResponseIssue.server(event, reason: .failed)
+        case "response.incomplete": throw ResponseIssue.server(event, reason: .incomplete)
         default: break
         }
     }
     mutating func finish() throws -> String {
         try dispatch()
-        guard complete, let answer else { throw SafeFailure.incomplete }; return answer
+        guard complete, let answer else { throw ResponseIssue(reason: .missingCompletion) }; return answer
+    }
+}
+
+// Preserve LF/CRLF/CR and blank SSE separators directly from bytes. Do not rely
+// on Foundation's text-line adapter to preserve event framing.
+struct ResponseBytes {
+    private var line = Data()
+    private var afterCR = false
+    private var firstLine = true
+    private(set) var stream = ResponseStream()
+    private(set) var count = 0
+    mutating func receive(_ byte: UInt8) throws {
+        count += 1; guard count <= 8_000_000 else { throw SafeFailure.tooLarge }
+        if byte == 10, afterCR { afterCR = false; return }
+        afterCR = byte == 13
+        if byte == 10 || byte == 13 { try emitLine(); return }
+        line.append(byte); guard line.count <= 2_000_000 else { throw SafeFailure.tooLarge }
+    }
+    private mutating func emitLine() throws {
+        if firstLine, line.starts(with: [0xEF, 0xBB, 0xBF]) { line.removeFirst(3) }
+        firstLine = false
+        guard let text = String(data: line, encoding: .utf8) else { throw ResponseIssue(reason: .malformed) }
+        line.removeAll(keepingCapacity: true); try stream.receive(text)
+    }
+    mutating func finish() throws -> String {
+        if !line.isEmpty { try emitLine() }
+        return try stream.finish()
+    }
+}
+
+enum ResponseReader {
+    struct Progress {
+        var bytes = 0
+        var events = 0
+        var lastEvent: String?
+    }
+    @MainActor static func read<Bytes: AsyncSequence>(_ bytes: Bytes, response: URLResponse,
+        onProgress: (Progress) -> Void = { _ in }) async throws -> String where Bytes.Element == UInt8 {
+        guard let http = response as? HTTPURLResponse else { throw SafeFailure.network }
+        let media = DiagnosticMetadata.mediaType(http.value(forHTTPHeaderField: "Content-Type"))
+        if !(200..<300).contains(http.statusCode) || media != "text/event-stream" {
+            var body = Data()
+            for try await byte in bytes {
+                try Task.checkCancellation(); body.append(byte)
+                if body.count >= 65_536 { break }
+            }
+            let reason: ResponseIssue.Reason = (200..<300).contains(http.statusCode) ? .contentType : .http
+            if let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                throw ResponseIssue.server(object, reason: reason, status: http.statusCode)
+            }
+            throw ResponseIssue(reason: reason, bodyShape: body.isEmpty ? "empty" : "non-json",
+                                failure: http.statusCode == 401 ? .loginRequired : (http.statusCode == 429 ? .rateLimit : .requestFailed))
+        }
+        var decoder = ResponseBytes(), previousEvents = 0, previousBytes = 0
+        do {
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                try decoder.receive(byte)
+                if decoder.stream.events != previousEvents || decoder.count - previousBytes >= 16_384 {
+                    previousEvents = decoder.stream.events; previousBytes = decoder.count
+                    onProgress(Progress(bytes: decoder.count, events: decoder.stream.events, lastEvent: decoder.stream.lastEvent))
+                }
+                // response.completed, not socket EOF, is the terminal success condition.
+                if decoder.stream.complete { return try decoder.finish() }
+            }
+            return try decoder.finish()
+        } catch {
+            onProgress(Progress(bytes: decoder.count, events: decoder.stream.events, lastEvent: decoder.stream.lastEvent))
+            throw error
+        }
     }
 }
 

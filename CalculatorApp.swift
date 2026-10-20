@@ -57,6 +57,7 @@ import WebKit
         }
     }
     func clear() {
+        if pending { connection.cancelQuestion() }
         generation = UUID(); answerTask?.cancel(); answerTask = nil; equalsTask?.cancel(); equalsTask = nil
         lastEquals = nil; sequence.reset(); snapshot = nil
         pending = false; keyboard = false; ai = false; draft = ""; pages = []; page = 0; engine.clear()
@@ -93,6 +94,7 @@ import WebKit
     private func send(_ input: AIInput) {
         guard ai, !pending else { return }
         pending = true; keyboard = false; pages = []; page = 0
+        let diagnosticID = connection.beginQuestion()
         let transaction = UUID(); generation = transaction
         answerTask = Task { [weak self] in
             guard let self else { return }
@@ -101,14 +103,15 @@ import WebKit
                 let text: String
                 #if DEBUG
                 if let responder = self.syntheticResponder { text = try await responder(input) }
-                else { text = try await self.connection.answer(input) }
+                else { text = try await self.connection.answer(input, diagnosticID: diagnosticID) }
                 #else
-                text = try await self.connection.answer(input)
+                text = try await self.connection.answer(input, diagnosticID: diagnosticID)
                 #endif
                 guard !Task.isCancelled, self.generation == transaction, self.ai else { return }
                 self.pages = AnswerPages.split(text); self.page = 0; self.draft = ""
+                self.connection.finishQuestion(diagnosticID)
             } catch {
-                if self.generation == transaction { self.connection.recordFailure(error) }
+                if self.generation == transaction { self.connection.finishQuestion(diagnosticID, error: error) }
             }
         }
     }
@@ -140,6 +143,19 @@ import WebKit
         draft = "synthetic cancellation"; sendDraft(); clear()
         try? await Task.sleep(nanoseconds: 220_000_000)
         check(!ai && !pending && engine.display == "0" && pages.isEmpty, "C cancels stale response")
+        check(connection.question.stage == "취소됨", "C records cancellation")
+        press("="); press("=")
+        syntheticResponder = { _ in throw ResponseIssue(reason: .missingCompletion) }
+        draft = "synthetic response failure"; sendDraft()
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        let diagnosticID = connection.question.id, failure = connection.question.failure
+        check(!pending && answer == "0" && connection.question.stage == "실패", "failed answer retains hidden 0")
+        connection.recordFailure(SafeFailure.models)
+        check(connection.question.id == diagnosticID && connection.question.failure == failure && failure != nil, "connection status cannot overwrite question error")
+        clear(); press("="); press("=")
+        syntheticResponder = { _ in "2" }; draft = "synthetic retry"; sendDraft()
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        check(answer == "2" && connection.question.stage == "완료" && connection.question.failure == nil, "new successful request resets prior error")
         clear(); check(!ai && engine.display == "0", "C idempotent")
         edit(); check(!keyboard, "normal double display does not edit")
         press("9"); let preserved = engine.entry
@@ -361,7 +377,21 @@ struct ConnectionSettings: View {
                         Button("이 기기에서 계정 연결 해제", role: .destructive) { connection.disconnect() }
                     }
                 }
-                Section("상태") { Text(connection.status).font(.footnote).textSelection(.enabled) }
+                Section("연결·모델 상태") { Text(connection.status).font(.footnote).textSelection(.enabled) }
+                Section("최근 AI 요청") {
+                    Text(connection.question.stage).fontWeight(.semibold)
+                    if let started = connection.question.started {
+                        Text("전송 시작: " + started.formatted(date: .omitted, time: .standard))
+                        if let status = connection.question.httpStatus { Text("HTTP: \(status)") }
+                        if let type = connection.question.mediaType { Text("응답 형식: " + type) }
+                        Text("수신: \(connection.question.bytes)바이트 · 이벤트 \(connection.question.events)개")
+                        if let event = connection.question.lastEvent { Text("마지막 이벤트: " + event) }
+                        if let failure = connection.question.failure { Text(failure).foregroundStyle(.orange) }
+                        if let request = connection.question.requestID { Text("요청 ID: " + request) }
+                    }
+                    Text("질문·사진·답변·로그인 비밀은 진단 기록에 포함하지 않습니다. 이 기록은 앱 메모리에만 남고 모델 조회로 덮어쓰지 않습니다.")
+                }.font(.footnote).textSelection(.enabled)
+                Section("앱 버전") { Text("공학용 계산기 1.0.1 · 응답 수신 수정") }.font(.footnote)
                 Section("사용량·개인정보") {
                     Text("AI는 ChatGPT 플랜의 사용량·한도를 공유합니다. 별도의 무료 무제한 사용권이 아닙니다. API 요금 결제나 키 입력은 하지 않습니다.")
                     Text("계정 토큰은 이 기기의 Keychain에만 저장합니다. 질문과 사진은 전송할 때 OpenAI로 직접 보냅니다. 대화는 앱 메모리에만 있으며 서버 저장은 요청하지 않습니다. 앱 자체 분석·광고·원격 로그는 없습니다.")
@@ -378,7 +408,7 @@ struct ConnectionSettings: View {
             .alert("ChatGPT 플랜 사용", isPresented: $connection.showUsageNotice) {
                 Button("확인") { connection.acknowledgeUsage() }
             } message: { Text("이 앱의 AI 요청은 연결한 ChatGPT 플랜의 사용량을 사용하며 해당 한도가 적용됩니다. 최초 로그인·실제 AI 동작은 이 기기에서 확인하세요.") }
-            .task { if connection.selected != nil { await connection.loadModels() } }
+            .task { if connection.selected != nil, connection.models.isEmpty { await connection.loadModels() } }
         }
     }
 }
