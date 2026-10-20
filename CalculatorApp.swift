@@ -174,8 +174,17 @@ import WebKit
         guard ProcessInfo.processInfo.arguments.contains("--calculator-self-check") else { return }
         var passed = 0, errors: [String] = []
         func check(_ ok: Bool, _ label: String) { if ok { passed += 1 } else { errors.append(label) } }
+        // Cold simulator/WebKit startup can schedule the equals task after a
+        // fixed sleep has already elapsed. Observe completion with a deadline,
+        // keeping every state/value assertion and the production 335ms delay.
+        @MainActor func waitUntil(_ ready: () -> Bool) async {
+            let deadline = ProcessInfo.processInfo.systemUptime + 3
+            while !ready(), ProcessInfo.processInfo.systemUptime < deadline {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+        }
         clear(); press("2"); press("+"); press("3"); press("=")
-        try? await Task.sleep(nanoseconds: 400_000_000)
+        await waitUntil { engine.value == 5 }
         check(engine.value == 5, "normal equals")
         press("="); press("="); check(ai, "double equals enters")
         press("="); press("="); check(ai, "double equals idempotent")
@@ -205,7 +214,7 @@ import WebKit
         draft = "synthetic ln(x) derivative"; sendDraft(); sendDraft()
         let sentDraft = draft; press("9"); press("CE")
         check(pending && answer == "0" && !keyboard && draft == sentDraft, "pending 0 and duplicate/edit guard")
-        try? await Task.sleep(nanoseconds: 220_000_000)
+        await waitUntil { !pending }
         check(!pending && pages.count == 2 && count == 1 && draft == sentDraft, "one request and final pages with question retained")
         swipe(CGSize(width: -70, height: 0)); check(answer == "2", "swipe next")
         swipe(CGSize(width: 70, height: 0)); check(answer.contains("frac"), "swipe previous")
@@ -217,17 +226,17 @@ import WebKit
         press("="); press("=")
         syntheticResponder = { _ in throw ResponseIssue(reason: .missingCompletion) }
         draft = "synthetic response failure"; sendDraft()
-        try? await Task.sleep(nanoseconds: 80_000_000)
+        await waitUntil { !pending }
         let diagnosticID = connection.question.id, failure = connection.question.failure
         check(!pending && answer == "0" && connection.question.stage == "실패", "failed answer retains hidden 0")
         connection.recordFailure(SafeFailure.models)
         check(connection.question.id == diagnosticID && connection.question.failure == failure && failure != nil, "connection status cannot overwrite question error")
         clear(); press("="); press("=")
         syntheticResponder = { _ in "2" }; draft = "synthetic retry"; sendDraft()
-        try? await Task.sleep(nanoseconds: 80_000_000)
+        await waitUntil { !pending }
         check(answer == "2" && connection.question.stage == "완료" && connection.question.failure == nil, "new successful request resets prior error")
         draft = "synthetic settings race"; sendDraft(); press("ln")
-        try? await Task.sleep(nanoseconds: 80_000_000)
+        await waitUntil { !pending }
         press("n!"); press("mod"); press("ln")
         check(settings && answer == "2" && draft == "synthetic settings race", "answer arriving during settings sequence is preserved")
         settings = false
