@@ -383,7 +383,8 @@ struct ConnectionSettings: View {
                     if let started = connection.question.started {
                         Text("전송 시작: " + started.formatted(date: .omitted, time: .standard))
                         if let status = connection.question.httpStatus { Text("HTTP: \(status)") }
-                        if let type = connection.question.mediaType { Text("응답 형식: " + type) }
+                        if let type = connection.question.mediaType { Text("응답 헤더: " + type) }
+                        if let shape = connection.question.bodyShape { Text("본문 판별: " + shape) }
                         Text("수신: \(connection.question.bytes)바이트 · 이벤트 \(connection.question.events)개")
                         if let event = connection.question.lastEvent { Text("마지막 이벤트: " + event) }
                         if let failure = connection.question.failure { Text(failure).foregroundStyle(.orange) }
@@ -391,7 +392,7 @@ struct ConnectionSettings: View {
                     }
                     Text("질문·사진·답변·로그인 비밀은 진단 기록에 포함하지 않습니다. 이 기록은 앱 메모리에만 남고 모델 조회로 덮어쓰지 않습니다.")
                 }.font(.footnote).textSelection(.enabled)
-                Section("앱 버전") { Text("공학용 계산기 1.0.1 · 응답 수신 수정") }.font(.footnote)
+                Section("앱 버전") { Text("공학용 계산기 1.0.2 · 응답 형식 판별 보완") }.font(.footnote)
                 Section("사용량·개인정보") {
                     Text("AI는 ChatGPT 플랜의 사용량·한도를 공유합니다. 별도의 무료 무제한 사용권이 아닙니다. API 요금 결제나 키 입력은 하지 않습니다.")
                     Text("계정 토큰은 이 기기의 Keychain에만 저장합니다. 질문과 사진은 전송할 때 OpenAI로 직접 보냅니다. 대화는 앱 메모리에만 있으며 서버 저장은 요청하지 않습니다. 앱 자체 분석·광고·원격 로그는 없습니다.")

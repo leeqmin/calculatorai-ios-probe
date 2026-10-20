@@ -2,6 +2,10 @@
 
 New actual calculator, separate from the old synthetic CalculatorProbe. Own newly authored files are MIT licensed (LICENSE-calculator). Bundled KaTeX retains its own MIT license in KaTeX-vendor.zip/katex/LICENSE. No credentials or device identifiers belong in this repository.
 
+### 1.0.2 response-format follow-up
+
+The user-reported 1.0.1 diagnostic showed HTTP200, unknown/missing MIME and a non-JSON error classification. This does not prove inference succeeded or that no body arrived: the old diagnostic counter excluded the non-SSE error branch. Version1.0.2 distinguishes missing/known-other MIME, counts all received body bytes and reports only a fixed body-shape label (SSE/JSON/HTML/gzip/binary/other-text/empty). A successful HTTP response with valid SSE framing is parsed even when its MIME header is absent or mislabeled. Only the existing validated response.completed can produce an answer; HTML, error text, JSON-only output, non-2xx and partial streams cannot masquerade as success. Additional private URLProtocol fixtures cover these exact paths. No raw body, header values outside the finite MIME list, private messages or authentication secrets are logged.
+
 ### 1.0.1 response-reception update
 
 Read SSE from raw bytes with preserved blank-line boundaries (LF/CRLF/CR), fragmented UTF-8, BOM and multiline data handling. Return only after a validated `response.completed`, immediately without waiting for socket EOF; incomplete streams never display partial text. Each inference has its own cancellable session. Settings retain the latest question stage, bounded HTTP/content-type/event counts, request ID and sanitized error code/parameter separately from model-loading status. Raw bodies/messages, questions, answers and credentials are never diagnostic records; diagnostics are in-memory only. The main display/gestures and Keychain service/bundle ID remain unchanged.

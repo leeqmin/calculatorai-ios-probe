@@ -109,7 +109,7 @@ import CryptoKit
         for try await line in legacy.lines { if line.isEmpty { legacyBlanks += 1 } }
         let normal = try await read("good")
         check(normal == "2", "production URLSession bytes LF framing")
-        for path in ["crlf", "cr", "multiline", "bom", "unicode"] {
+        for path in ["crlf", "cr", "multiline", "bom", "unicode", "headerless", "octets", "plain-sse", "unknown-mime"] {
             let answer = try await read(path)
             check(answer == (path == "unicode" ? "정답 2" : "2"), "byte chunk fixture " + path)
         }
@@ -125,6 +125,15 @@ import CryptoKit
             return try await group.next()!
         }
         check(open == "2", "completed response returns without EOF")
+        let headerlessOpen = try await withThrowingTaskGroup(of: String.self) { group in
+            group.addTask {
+                let (bytes, response) = try await session.bytes(from: URL(string: "https://calculator-fixture.invalid/headerless-open")!)
+                return try await ResponseReader.read(bytes, response: response)
+            }
+            group.addTask { try await Task.sleep(nanoseconds: 10_000_000_000); throw SafeFailure.timeout }
+            defer { group.cancelAll() }; return try await group.next()!
+        }
+        check(headerlessOpen == "2", "headerless completed response returns without EOF")
         for (path, reason) in [("truncated", ResponseIssue.Reason.missingCompletion), ("malformed", .malformed),
                               ("failed", .failed), ("incomplete", .incomplete), ("json", .contentType), ("denied", .http)] {
             do { _ = try await read(path); fatalError("CHECK FAILED (accepted): " + path) }
@@ -135,6 +144,20 @@ import CryptoKit
                 }
             }
         }
+        for (path, shape, count) in [("html", "HTML", 52), ("empty-body", "empty", 0), ("gzip", "gzip", 4), ("plain-error", "other-text", 24)] {
+            let (bytes, response) = try await session.bytes(from: URL(string: "https://calculator-fixture.invalid/" + path)!)
+            var progress = ResponseReader.Progress()
+            do {
+                _ = try await ResponseReader.read(bytes, response: response) { progress = $0 }
+                fatalError("CHECK FAILED (accepted non-SSE body): " + path)
+            } catch let issue as ResponseIssue {
+                check(issue.reason == .contentType && issue.bodyShape == shape, "non-SSE classification " + path)
+                check(progress.bytes == count && progress.bodyShape == shape, "non-SSE actual byte counter " + path)
+            }
+        }
+        let (deniedBytes, deniedResponse) = try await session.bytes(from: URL(string: "https://calculator-fixture.invalid/denied-sse")!)
+        do { _ = try await ResponseReader.read(deniedBytes, response: deniedResponse); fatalError("CHECK FAILED: non-2xx SSE accepted") }
+        catch let issue as ResponseIssue { check(issue.reason == .http, "non-2xx cannot succeed via SSE sniffing") }
         var diagnostic = QuestionDiagnostic(); diagnostic.begin()
         diagnostic.fail(ResponseIssue(reason: .missingCompletion))
         let saved = diagnostic.failure
@@ -146,7 +169,11 @@ import CryptoKit
         check(DiagnosticMetadata.requestID("req_synthetic_123") == "req_synthetic_123", "request ID accepted")
         check(DiagnosticMetadata.requestID("private input") == nil, "arbitrary request ID excluded")
         check(DiagnosticMetadata.mediaType("text/event-stream; charset=utf-8") == "text/event-stream", "SSE content type parameters")
-        check(DiagnosticMetadata.mediaType("private input") == "기타/없음", "arbitrary content type excluded")
+        check(DiagnosticMetadata.mediaType("private input") == "기타 MIME", "arbitrary content type excluded")
+        check(DiagnosticMetadata.mediaType(nil) == "없음", "missing header distinguished")
+        check(DiagnosticMetadata.mediaType("application/octet-stream") == "application/octet-stream", "binary header distinguished")
+        check(DiagnosticMetadata.bodyShape(Data("data".utf8)) == nil, "fragmented SSE prefix waits")
+        check(DiagnosticMetadata.bodyShape(Data("data:".utf8)) == "SSE", "complete SSE prefix recognized")
         let safe = ResponseIssue.server(["error": ["code": "synthetic_failure", "message": "PRIVATE SYNTHETIC QUESTION"]], reason: .failed)
         diagnostic.fail(safe)
         check(diagnostic.failure?.contains("synthetic_failure") == true && diagnostic.failure?.contains("PRIVATE") == false, "raw server messages excluded")
@@ -198,7 +225,8 @@ final class ResponseFixture: URLProtocol {
         let path = request.url!.lastPathComponent
         let completed = "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"2\"}]}]}}\n\n"
         var body = "event: response.created\ndata: {\"type\":\"response.created\"}\n\n: heartbeat\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"2\"}\n\n" + completed
-        var status = 200, type = "text/event-stream; charset=utf-8"
+        var status = 200
+        var type: String? = "text/event-stream; charset=utf-8"
         switch path {
         case "crlf": body = body.replacingOccurrences(of: "\n", with: "\r\n")
         case "cr": body = body.replacingOccurrences(of: "\n", with: "\r")
@@ -211,13 +239,24 @@ final class ResponseFixture: URLProtocol {
         case "incomplete": body = "data: {\"type\":\"response.incomplete\"}\n\n"
         case "json": type = "application/json"; body = "{\"detail\":\"synthetic private text\"}"
         case "denied": status = 403; type = "application/json"; body = "{\"error\":{\"code\":\"subscription_sharing_user_not_eligible\"}}"
+        case "denied-sse": status = 403
+        case "headerless", "headerless-open": type = nil
+        case "octets": type = "application/octet-stream"
+        case "plain-sse": type = "text/plain"
+        case "unknown-mime": type = "application/x-synthetic-stream"
+        case "html": type = nil; body = "<!doctype html><html><body>unavailable</body></html>"
+        case "empty-body": type = nil; body = ""
+        case "plain-error": type = nil; body = "synthetic upstream error"
+        case "gzip": type = "application/octet-stream"
         default: break
         }
-        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": type, "x-request-id": "req_synthetic_test"])!
+        var headers = ["x-request-id": "req_synthetic_test"]
+        if let type { headers["Content-Type"] = type }
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        let bytes = Data(body.utf8)
+        let bytes = path == "gzip" ? Data([31, 139, 8, 0]) : Data(body.utf8)
         for offset in stride(from: 0, to: bytes.count, by: 7) { client?.urlProtocol(self, didLoad: bytes.subdata(in: offset..<min(bytes.count, offset + 7))) }
-        if path != "open" { client?.urlProtocolDidFinishLoading(self) }
+        if path != "open", path != "headerless-open" { client?.urlProtocolDidFinishLoading(self) }
     }
     override func stopLoading() {}
 }

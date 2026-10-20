@@ -349,7 +349,7 @@ final class OfficialTransport: @unchecked Sendable {
             question.stage = "응답 수신"
             if let http = response as? HTTPURLResponse {
                 question.httpStatus = http.statusCode
-                question.mediaType = DiagnosticMetadata.mediaType(http.value(forHTTPHeaderField: "Content-Type"))
+                question.mediaType = DiagnosticMetadata.mediaType(http.value(forHTTPHeaderField: "Content-Type") ?? http.mimeType)
                 question.requestID = DiagnosticMetadata.requestID(http.value(forHTTPHeaderField: "x-request-id"))
             }
         }
@@ -357,6 +357,7 @@ final class OfficialTransport: @unchecked Sendable {
             if self.question.id == diagnosticID, !self.question.terminal {
                 self.question.bytes = progress.bytes; self.question.events = progress.events
                 self.question.lastEvent = progress.lastEvent
+                self.question.bodyShape = progress.bodyShape
             }
         }
         try Task.checkCancellation()

@@ -219,7 +219,31 @@ enum DiagnosticMetadata {
     }
     static func mediaType(_ value: String?) -> String {
         let type = value?.split(separator: ";").first?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
-        return ["text/event-stream", "application/json", "text/html", "text/plain"].contains(type) ? type : "기타/없음"
+        if type.isEmpty { return "없음" }
+        return ["text/event-stream", "application/json", "text/html", "text/plain", "application/octet-stream",
+                "application/x-ndjson", "application/jsonl", "application/problem+json", "text/x-component"].contains(type) ? type : "기타 MIME"
+    }
+    static func bodyShape(_ data: Data, final: Bool = false) -> String? {
+        var bytes = Array(data.prefix(512))
+        let bom: [UInt8] = [0xEF, 0xBB, 0xBF]
+        if bytes.count < 3, bytes == Array(bom.prefix(bytes.count)), !final { return nil }
+        if bytes.starts(with: bom) { bytes.removeFirst(3) }
+        bytes = Array(bytes.drop(while: { [9, 10, 13, 32].contains($0) }))
+        if bytes.isEmpty { return final ? "empty" : nil }
+        if bytes.first == 31 {
+            if bytes.count == 1, !final { return nil }
+            return bytes.starts(with: [31, 139]) ? "gzip" : "binary"
+        }
+        let prefix = String(decoding: bytes.prefix(32), as: UTF8.self)
+        if prefix.hasPrefix(":") { return "SSE" }
+        for field in ["data:", "event:", "id:", "retry:"] {
+            if prefix.hasPrefix(field) { return "SSE" }
+            if field.hasPrefix(prefix), !final { return nil }
+        }
+        if [UInt8(ascii: "{"), UInt8(ascii: "[")].contains(bytes[0]) { return "JSON" }
+        if bytes[0] == UInt8(ascii: "<") { return "HTML" }
+        if bytes.contains(0) || bytes[0] < 9 { return "binary" }
+        return "other-text"
     }
 }
 
@@ -252,6 +276,7 @@ struct QuestionDiagnostic {
     var stage = "아직 전송한 질문이 없습니다."
     var httpStatus: Int?
     var mediaType: String?
+    var bodyShape: String?
     var requestID: String?
     var bytes = 0
     var events = 0
@@ -365,39 +390,54 @@ enum ResponseReader {
         var bytes = 0
         var events = 0
         var lastEvent: String?
+        var bodyShape: String?
     }
     @MainActor static func read<Bytes: AsyncSequence>(_ bytes: Bytes, response: URLResponse,
         onProgress: (Progress) -> Void = { _ in }) async throws -> String where Bytes.Element == UInt8 {
         guard let http = response as? HTTPURLResponse else { throw SafeFailure.network }
-        let media = DiagnosticMetadata.mediaType(http.value(forHTTPHeaderField: "Content-Type"))
-        if !(200..<300).contains(http.statusCode) || media != "text/event-stream" {
-            var body = Data()
-            for try await byte in bytes {
-                try Task.checkCancellation(); body.append(byte)
-                if body.count >= 65_536 { break }
-            }
-            let reason: ResponseIssue.Reason = (200..<300).contains(http.statusCode) ? .contentType : .http
-            if let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
-                throw ResponseIssue.server(object, reason: reason, status: http.statusCode)
-            }
-            throw ResponseIssue(reason: reason, bodyShape: body.isEmpty ? "empty" : "non-json",
-                                failure: http.statusCode == 401 ? .loginRequired : (http.statusCode == 429 ? .rateLimit : .requestFailed))
-        }
+        let success = (200..<300).contains(http.statusCode)
         var decoder = ResponseBytes(), previousEvents = 0, previousBytes = 0
+        var prefix = Data(), shape: String?, received = 0
+        func report() {
+            onProgress(Progress(bytes: received, events: decoder.stream.events, lastEvent: decoder.stream.lastEvent, bodyShape: shape))
+        }
         do {
             for try await byte in bytes {
                 try Task.checkCancellation()
-                try decoder.receive(byte)
+                received += 1; guard received <= 8_000_000 else { throw SafeFailure.tooLarge }
+                if shape == "SSE", success { try decoder.receive(byte) }
+                else {
+                    prefix.append(byte)
+                    if shape == nil { shape = DiagnosticMetadata.bodyShape(prefix) }
+                    if shape == "SSE", success {
+                        // A missing/mislabeled MIME header is not evidence of an
+                        // invalid event stream. Only validated SSE events can succeed.
+                        for buffered in prefix { try decoder.receive(buffered) }
+                        prefix.removeAll(keepingCapacity: false); report()
+                    } else {
+                        if received - previousBytes >= 4096 { previousBytes = received; report() }
+                        if prefix.count >= 65_536 { break }
+                        continue
+                    }
+                }
                 if decoder.stream.events != previousEvents || decoder.count - previousBytes >= 16_384 {
                     previousEvents = decoder.stream.events; previousBytes = decoder.count
-                    onProgress(Progress(bytes: decoder.count, events: decoder.stream.events, lastEvent: decoder.stream.lastEvent))
+                    report()
                 }
                 // response.completed, not socket EOF, is the terminal success condition.
-                if decoder.stream.complete { return try decoder.finish() }
+                if decoder.stream.complete { report(); return try decoder.finish() }
             }
-            return try decoder.finish()
+            if shape == nil { shape = DiagnosticMetadata.bodyShape(prefix, final: true) }
+            report()
+            if shape == "SSE", success { return try decoder.finish() }
+            let reason: ResponseIssue.Reason = success ? .contentType : .http
+            if let object = try? JSONSerialization.jsonObject(with: prefix) as? [String: Any] {
+                throw ResponseIssue.server(object, reason: reason, status: http.statusCode)
+            }
+            throw ResponseIssue(reason: reason, bodyShape: shape ?? "unknown",
+                                failure: http.statusCode == 401 ? .loginRequired : (http.statusCode == 429 ? .rateLimit : .requestFailed))
         } catch {
-            onProgress(Progress(bytes: decoder.count, events: decoder.stream.events, lastEvent: decoder.stream.lastEvent))
+            report()
             throw error
         }
     }
