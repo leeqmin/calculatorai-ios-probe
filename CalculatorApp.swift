@@ -149,6 +149,11 @@ import WebKit
                 #endif
                 guard !Task.isCancelled, self.generation == transaction, self.ai else { return }
                 self.pages = AnswerPages.split(text); self.page = 0
+                // Completing the settings gesture must not erase an answer
+                // that arrived between the first and last gesture keys.
+                if let saved = self.draftSnapshot {
+                    self.draftSnapshot = (text: saved.text, selection: saved.selection, pages: self.pages, page: 0)
+                }
                 self.connection.finishQuestion(diagnosticID)
             } catch {
                 if self.generation == transaction { self.connection.finishQuestion(diagnosticID, error: error) }
@@ -221,6 +226,11 @@ import WebKit
         syntheticResponder = { _ in "2" }; draft = "synthetic retry"; sendDraft()
         try? await Task.sleep(nanoseconds: 80_000_000)
         check(answer == "2" && connection.question.stage == "완료" && connection.question.failure == nil, "new successful request resets prior error")
+        draft = "synthetic settings race"; sendDraft(); press("ln")
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        press("n!"); press("mod"); press("ln")
+        check(settings && answer == "2" && draft == "synthetic settings race", "answer arriving during settings sequence is preserved")
+        settings = false
         clear(); check(!ai && engine.display == "0", "C idempotent")
         edit(); check(!keyboard, "normal double display does not edit")
         press("9"); let preserved = engine.entry
