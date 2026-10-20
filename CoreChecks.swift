@@ -102,7 +102,9 @@ import CryptoKit
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
         func read(_ path: String) async throws -> String {
-            let (bytes, response) = try await session.bytes(from: URL(string: "https://calculator-fixture.invalid/" + path)!)
+            let exchange = ResponseExchange(configuration: configuration)
+            defer { exchange.cancel() }
+            let (bytes, response) = try await exchange.open(URLRequest(url: URL(string: "https://calculator-fixture.invalid/" + path)!))
             return try await ResponseReader.read(bytes, response: response)
         }
         let (legacy, _) = try await session.bytes(from: URL(string: "https://calculator-fixture.invalid/good")!)
@@ -117,7 +119,8 @@ import CryptoKit
         // return would hang; the bounded timeout fails the check instead.
         let open = try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask {
-                let (bytes, response) = try await session.bytes(from: URL(string: "https://calculator-fixture.invalid/open")!)
+                let exchange = ResponseExchange(configuration: configuration); defer { exchange.cancel() }
+                let (bytes, response) = try await exchange.open(URLRequest(url: URL(string: "https://calculator-fixture.invalid/open")!))
                 return try await ResponseReader.read(bytes, response: response)
             }
             group.addTask { try await Task.sleep(nanoseconds: 10_000_000_000); throw SafeFailure.timeout }
@@ -127,7 +130,8 @@ import CryptoKit
         check(open == "2", "completed response returns without EOF")
         let headerlessOpen = try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask {
-                let (bytes, response) = try await session.bytes(from: URL(string: "https://calculator-fixture.invalid/headerless-open")!)
+                let exchange = ResponseExchange(configuration: configuration); defer { exchange.cancel() }
+                let (bytes, response) = try await exchange.open(URLRequest(url: URL(string: "https://calculator-fixture.invalid/headerless-open")!))
                 return try await ResponseReader.read(bytes, response: response)
             }
             group.addTask { try await Task.sleep(nanoseconds: 10_000_000_000); throw SafeFailure.timeout }
@@ -145,7 +149,8 @@ import CryptoKit
             }
         }
         for (path, shape, count) in [("html", "HTML", 52), ("empty-body", "empty", 0), ("gzip", "gzip", 4), ("plain-error", "other-text", 24)] {
-            let (bytes, response) = try await session.bytes(from: URL(string: "https://calculator-fixture.invalid/" + path)!)
+            let exchange = ResponseExchange(configuration: configuration); defer { exchange.cancel() }
+            let (bytes, response) = try await exchange.open(URLRequest(url: URL(string: "https://calculator-fixture.invalid/" + path)!))
             var progress = ResponseReader.Progress()
             do {
                 _ = try await ResponseReader.read(bytes, response: response) { progress = $0 }
@@ -155,7 +160,8 @@ import CryptoKit
                 check(progress.bytes == count && progress.bodyShape == shape, "non-SSE actual byte counter " + path)
             }
         }
-        let (deniedBytes, deniedResponse) = try await session.bytes(from: URL(string: "https://calculator-fixture.invalid/denied-sse")!)
+        let deniedExchange = ResponseExchange(configuration: configuration); defer { deniedExchange.cancel() }
+        let (deniedBytes, deniedResponse) = try await deniedExchange.open(URLRequest(url: URL(string: "https://calculator-fixture.invalid/denied-sse")!))
         do { _ = try await ResponseReader.read(deniedBytes, response: deniedResponse); fatalError("CHECK FAILED: non-2xx SSE accepted") }
         catch let issue as ResponseIssue { check(issue.reason == .http, "non-2xx cannot succeed via SSE sniffing") }
         var diagnostic = QuestionDiagnostic(); diagnostic.begin()

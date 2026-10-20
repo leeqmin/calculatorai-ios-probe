@@ -385,6 +385,76 @@ struct ResponseBytes {
     }
 }
 
+// Delegate delivery avoids the AsyncBytes adapter's MIME sniffing/buffering for
+// small headerless responses. Bounded chunk storage, no cookies/cache/redirects.
+final class ResponseExchange: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    struct Bytes: AsyncSequence {
+        typealias Element = UInt8
+        let chunks: AsyncThrowingStream<Data, Error>
+        struct AsyncIterator: AsyncIteratorProtocol {
+            var chunks: AsyncThrowingStream<Data, Error>.Iterator
+            var data = Data(), offset = 0
+            mutating func next() async throws -> UInt8? {
+                try Task.checkCancellation()
+                while offset >= data.count {
+                    guard let next = try await chunks.next() else { return nil }
+                    data = next; offset = 0
+                }
+                defer { offset += 1 }; return data[data.startIndex + offset]
+            }
+        }
+        func makeAsyncIterator() -> AsyncIterator { AsyncIterator(chunks: chunks.makeAsyncIterator()) }
+    }
+    private let responses: AsyncThrowingStream<HTTPURLResponse, Error>
+    private let responseSink: AsyncThrowingStream<HTTPURLResponse, Error>.Continuation
+    private let chunks: AsyncThrowingStream<Data, Error>
+    private let chunkSink: AsyncThrowingStream<Data, Error>.Continuation
+    private var session: URLSession!
+    private let lock = NSLock()
+    private var count = 0
+    private var stopped = false
+    init(configuration: URLSessionConfiguration = .ephemeral) {
+        var responseSink: AsyncThrowingStream<HTTPURLResponse, Error>.Continuation!
+        var chunkSink: AsyncThrowingStream<Data, Error>.Continuation!
+        responses = AsyncThrowingStream(bufferingPolicy: .bufferingOldest(1)) { responseSink = $0 }
+        chunks = AsyncThrowingStream(bufferingPolicy: .bufferingOldest(1024)) { chunkSink = $0 }
+        self.responseSink = responseSink; self.chunkSink = chunkSink
+        super.init()
+        configuration.urlCache = nil; configuration.httpCookieStorage = nil; configuration.httpShouldSetCookies = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.timeoutIntervalForRequest = 180; configuration.timeoutIntervalForResource = 240
+        let queue = OperationQueue(); queue.maxConcurrentOperationCount = 1
+        session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
+    }
+    func open(_ request: URLRequest) async throws -> (Bytes, HTTPURLResponse) {
+        try await withTaskCancellationHandler(operation: {
+            try Task.checkCancellation(); session.dataTask(with: request).resume()
+            var iterator = responses.makeAsyncIterator()
+            guard let response = try await iterator.next() else { throw SafeFailure.network }
+            try Task.checkCancellation(); return (Bytes(chunks: chunks), response)
+        }, onCancel: { self.cancel() })
+    }
+    func cancel() { finish(CancellationError()); session.invalidateAndCancel() }
+    private func finish(_ error: Error?) {
+        lock.lock(); let shouldFinish = !stopped; stopped = true; lock.unlock()
+        guard shouldFinish else { return }
+        responseSink.finish(throwing: error); chunkSink.finish(throwing: error)
+    }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard let http = response as? HTTPURLResponse else { completionHandler(.cancel); finish(SafeFailure.network); return }
+        responseSink.yield(http); responseSink.finish(); completionHandler(.allow)
+    }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock(); count += data.count; let reject = stopped || count > 8_000_000; lock.unlock()
+        if reject { finish(SafeFailure.tooLarge); session.invalidateAndCancel(); return }
+        if case .dropped = chunkSink.yield(data) { finish(SafeFailure.tooLarge); session.invalidateAndCancel() }
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) { finish(error) }
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+}
+
 enum ResponseReader {
     struct Progress {
         var bytes = 0

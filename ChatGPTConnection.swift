@@ -340,10 +340,10 @@ final class OfficialTransport: @unchecked Sendable {
         request.httpBody = try ResponseRequest.data(model: slug, input: input)
         // A per-question session lets completion/C close only this stream, never
         // a shared account refresh or newer request.
-        let session = OfficialTransport.makeSession()
-        defer { session.invalidateAndCancel() }
+        let exchange = ResponseExchange()
+        defer { exchange.cancel() }
         stage("서버 응답 대기")
-        let (bytes, response) = try await session.bytes(for: request)
+        let (bytes, response) = try await exchange.open(request)
         guard epoch == generation, selectedID == account else { throw SafeFailure.cancelled }
         if question.id == diagnosticID, !question.terminal {
             question.stage = "응답 수신"
@@ -353,13 +353,15 @@ final class OfficialTransport: @unchecked Sendable {
                 question.requestID = DiagnosticMetadata.requestID(http.value(forHTTPHeaderField: "x-request-id"))
             }
         }
-        let result = try await ResponseReader.read(bytes, response: response) { progress in
-            if self.question.id == diagnosticID, !self.question.terminal {
-                self.question.bytes = progress.bytes; self.question.events = progress.events
-                self.question.lastEvent = progress.lastEvent
-                self.question.bodyShape = progress.bodyShape
+        let result = try await withTaskCancellationHandler(operation: {
+            try await ResponseReader.read(bytes, response: response) { progress in
+                if self.question.id == diagnosticID, !self.question.terminal {
+                    self.question.bytes = progress.bytes; self.question.events = progress.events
+                    self.question.lastEvent = progress.lastEvent
+                    self.question.bodyShape = progress.bodyShape
+                }
             }
-        }
+        }, onCancel: { exchange.cancel() })
         try Task.checkCancellation()
         guard epoch == generation, selectedID == account else { throw SafeFailure.cancelled }
         return result
