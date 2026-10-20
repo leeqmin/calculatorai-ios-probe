@@ -29,6 +29,7 @@ jobs:
             build/ScientificCalculator-unsigned.ipa
             build/core-checks.txt
             build/mock-app-checks.txt
+            build/connection-checks.txt
             build/math-render-check.txt
             build/number-render-check.txt
             build/formula-simulator.png
