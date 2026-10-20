@@ -96,12 +96,14 @@ import CryptoKit
         print("PASS: \(passed) synthetic core checks; URLSession fixture checks passed. Foundation lines blank separators: \(legacyBlanks). No real account, clipboard, external network or device used.")
     }
     static var legacyBlanks = 0
+    static func fixtureStage(_ name: String) { FileHandle.standardError.write(Data(("Synthetic fixture: " + name + "\n").utf8)) }
     @MainActor static func responseChecks() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ResponseFixture.self]
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
         func read(_ path: String) async throws -> String {
+            fixtureStage(path)
             let exchange = ResponseExchange(configuration: configuration)
             defer { exchange.cancel() }
             let (bytes, response) = try await exchange.open(URLRequest(url: URL(string: "https://calculator-fixture.invalid/" + path)!))
@@ -117,6 +119,7 @@ import CryptoKit
         }
         // This fixture deliberately never signals socket EOF. A missing early
         // return would hang; the bounded timeout fails the check instead.
+        fixtureStage("open")
         let open = try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask {
                 let exchange = ResponseExchange(configuration: configuration); defer { exchange.cancel() }
@@ -128,6 +131,7 @@ import CryptoKit
             return try await group.next()!
         }
         check(open == "2", "completed response returns without EOF")
+        fixtureStage("headerless-open")
         let headerlessOpen = try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask {
                 let exchange = ResponseExchange(configuration: configuration); defer { exchange.cancel() }
@@ -138,6 +142,19 @@ import CryptoKit
             defer { group.cancelAll() }; return try await group.next()!
         }
         check(headerlessOpen == "2", "headerless completed response returns without EOF")
+        // Foundation/CFNetwork may sniff a small missing-MIME network body.
+        // Isolate the parser from that OS behavior and require even a tiny
+        // headerless completed stream to return without the producer closing.
+        fixtureStage("tiny-headerless-parser-open")
+        let tiny = Data("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"2\"}]}]}}\n\n".utf8)
+        let chunks = AsyncThrowingStream<Data, Error> { $0.yield(tiny) } // Intentionally no finish().
+        let tinyResponse = HTTPURLResponse(url: URL(string: "https://calculator-fixture.invalid/tiny")!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:])!
+        let tinyAnswer = try await withThrowingTaskGroup(of: String.self) { group in
+            group.addTask { try await ResponseReader.read(ResponseExchange.Bytes(chunks: chunks), response: tinyResponse) }
+            group.addTask { try await Task.sleep(nanoseconds: 10_000_000_000); throw SafeFailure.timeout }
+            defer { group.cancelAll() }; return try await group.next()!
+        }
+        check(tinyAnswer == "2", "tiny headerless parser completes without EOF")
         for (path, reason) in [("truncated", ResponseIssue.Reason.missingCompletion), ("malformed", .malformed),
                               ("failed", .failed), ("incomplete", .incomplete), ("json", .contentType), ("denied", .http)] {
             do { _ = try await read(path); fatalError("CHECK FAILED (accepted): " + path) }
@@ -246,7 +263,12 @@ final class ResponseFixture: URLProtocol {
         case "json": type = "application/json"; body = "{\"detail\":\"synthetic private text\"}"
         case "denied": status = 403; type = "application/json"; body = "{\"error\":{\"code\":\"subscription_sharing_user_not_eligible\"}}"
         case "denied-sse": status = 403
-        case "headerless", "headerless-open": type = nil
+        case "headerless": type = nil
+        case "headerless-open":
+            type = nil
+            // A valid SSE heartbeat gets CFNetwork past its MIME sniffing
+            // buffer. Still no socket EOF; completed-event behavior is tested.
+            body = ": " + String(repeating: "x", count: 1024) + "\n\n" + body
         case "octets": type = "application/octet-stream"
         case "plain-sse": type = "text/plain"
         case "unknown-mime": type = "application/x-synthetic-stream"

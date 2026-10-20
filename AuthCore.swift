@@ -385,8 +385,9 @@ struct ResponseBytes {
     }
 }
 
-// Delegate delivery avoids the AsyncBytes adapter's MIME sniffing/buffering for
-// small headerless responses. Bounded chunk storage, no cookies/cache/redirects.
+// Explicit per-question delivery/cancellation with bounded chunk storage.
+// CFNetwork may still sniff a small headerless body before delivering bytes.
+// No cookies/cache/redirects; no changes to system TLS validation.
 final class ResponseExchange: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     struct Bytes: AsyncSequence {
         typealias Element = UInt8
