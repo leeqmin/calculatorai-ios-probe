@@ -8,7 +8,7 @@ unzip -oq KaTeX-vendor.zip
 swift MakeIcon.swift Assets.xcassets/AppIcon.appiconset/Icon.png
 printf '%s\n' '{"images":[{"filename":"Icon.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}' > Assets.xcassets/AppIcon.appiconset/Contents.json
 printf '%s\n' '{"info":{"author":"xcode","version":1}}' > Assets.xcassets/Contents.json
-swiftc -parse-as-library CalculatorCore.swift AuthCore.swift CoreChecks.swift -o build/core-checks
+swiftc -target "$(uname -m)-apple-macosx13.0" -parse-as-library CalculatorCore.swift AuthCore.swift CoreChecks.swift -o build/core-checks
 build/core-checks | tee build/core-checks.txt
 plutil -lint CalculatorInfo.plist ScientificCalculator.xcodeproj/project.pbxproj
 xcodebuild -project ScientificCalculator.xcodeproj -scheme ScientificCalculator -configuration Release \
