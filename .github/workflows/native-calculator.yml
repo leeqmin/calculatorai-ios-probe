@@ -30,7 +30,10 @@ jobs:
             build/core-checks.txt
             build/mock-app-checks.txt
             build/math-render-check.txt
+            build/number-render-check.txt
             build/formula-simulator.png
+            build/number-simulator.png
+            build/draft-simulator.png
             build/ipa-sha256.txt
             build/calculator-simulator.png
             build/device-build.log
