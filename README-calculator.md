@@ -2,6 +2,12 @@
 
 New actual calculator, separate from the old synthetic CalculatorProbe. Own newly authored files are MIT licensed (LICENSE-calculator). Bundled KaTeX retains its own MIT license in KaTeX-vendor.zip/katex/LICENSE. No credentials or device identifiers belong in this repository.
 
+### 1.0.5 ordinary calculator numeric keyboard
+
+User confirmed 1.0.4 works on their phone. A single display tap in normal mode opens a native number pad; only ASCII 0...9 is accepted and routed once through existing calculator key handling. A mixed insertion is rejected in full, Unicode number lookalikes are not accepted, the existing 18-digit engine limit is preserved, and backspace uses the original deletion rules. Decimal points, signs, operators and scientific functions still use the visible calculator buttons. Normal mode never requests AI or reads the clipboard. Native paste/context-menu actions are disabled in numeric mode; Done/Return, downward swipe, C and normal calculator buttons dismiss the keyboard without auto-submission. The full AI keyboard, Korean composition, double-display tap, explicit AI long-press paste, hidden settings and C/double-equals behavior remain.
+
+The field is reused across modes and switches keyboard type/action policy in place. Synthetic core/native checks cover invalid insertions, delegate routing, actual number-pad presentation, existing arithmetic, decimal/sign keys, paste blocking without clipboard access, digit limits, dismissal and return to the ordinary AI text keyboard. A separate simulator screenshot captures the normal number pad. These tests do not replace a real iPhone gesture/keyboard acceptance test. Authentication/connection/recovery source files and Keychain/bundle identifiers are unchanged.
+
 ### 1.0.4 connection recovery hardening
 
 No calculator, rendering, gestures, OAuth endpoint/scope/client registration, bundle ID, Keychain service/key or billing changes. ConnectionRecovery.swift classifies bounded HTTP status/code/parameter/request ID and fixed response shape, never server descriptions or raw bodies. Sign-in renewal, model lookup and inference keep separate phases; the latest connection error and latest question failure survive a successful model refresh. Explicitly invalid refresh credentials are cleared while client registration/model choice are kept for user-initiated sign-in. Temporary failures, invalid-client errors and ambiguous authorization failures preserve credentials and do not start login loops or background retries.
@@ -35,7 +41,7 @@ The core checks now exercise the production reader through a private ephemeral U
 ## Personal gestures
 
 - Double `=` within 330ms enters AI, never toggles out. Normal single equals is delayed 335ms to distinguish it.
-- C cancels work and returns to calculator. Other scientific buttons do not compute in AI. Clipboard is never read in normal mode.
+- C cancels work and returns to calculator. Other scientific buttons do not compute in AI. Clipboard is never read in normal mode. Normal single display tap opens the digits-only keyboard; Done/downward swipe/calculator buttons dismiss it.
 - AI only: double-tap display opens the keyboard; keyboard Send submits; display long-press 0.6s reads clipboard text/image and sends once. A small 9pt preview shows the typed question and keypad math. Pending is 0, only a completed final answer is rendered. Horizontal swipe changes answer lines. No mode/settings icon or lock.
 - Settings: ln → n! → mod → ln within 4s. Completion restores the earlier calculator/question state. This discoverable sequence is not access control.
 

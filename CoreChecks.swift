@@ -51,6 +51,13 @@ import CryptoKit
         check(!seq.accept("n!", now: 9), "sequence timeout")
         check(!seq.accept("mod", now: 10), "sequence timeout cannot complete")
         draftChecks()
+        check(NumericTyping.keys("0123456789") == Array("0123456789").map(String.init), "normal keyboard accepts only ASCII digits")
+        for text in ["", ".", "-", "+", "12.3", "1+2", "123abc", "한글", "１２", "١٢", "²", " 12", "12\n", String(repeating: "9", count: 65)] {
+            check(NumericTyping.keys(text) == nil, "normal keyboard rejects unsupported insertion")
+        }
+        var typedEngine = ScientificEngine()
+        for key in NumericTyping.keys(String(repeating: "9", count: 32))! { typedEngine.press(key) }
+        check(typedEngine.entry.count == 18, "normal keyboard retains engine digit limit")
         check(AnswerPages.split("a\nb\nc") == ["a", "b", "c"], "answer pagination")
         check(AnswerPages.split("\\begin{cases}\na & x>0\\\\\nb & x<0\n\\end{cases}").count == 1, "cases atomic")
         check(AnswerPages.split(" \n ").isEmpty, "empty answer")

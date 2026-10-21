@@ -73,4 +73,8 @@ xcrun simctl terminate "$DEVICE" org.local.scientificcalculator.personal
 xcrun simctl launch "$DEVICE" org.local.scientificcalculator.personal --calculator-draft-check
 sleep 3
 xcrun simctl io "$DEVICE" screenshot build/draft-simulator.png
+xcrun simctl terminate "$DEVICE" org.local.scientificcalculator.personal
+xcrun simctl launch "$DEVICE" org.local.scientificcalculator.personal --calculator-keyboard-check
+sleep 3
+xcrun simctl io "$DEVICE" screenshot build/keyboard-simulator.png
 echo 'Unsigned IPA and simulator launch completed. Real iPhone signing, gestures, login and inference remain unverified.'

@@ -29,7 +29,8 @@ import WebKit
     #endif
     var answer: String { pages.isEmpty ? "0" : pages[min(page, pages.count - 1)] }
 
-    func press(_ key: String) {
+    func press(_ key: String, fromKeyboard: Bool = false) {
+        if !ai, !fromKeyboard { keyboard = false }
         if ai && !pending { commitField() }
         let now = ProcessInfo.processInfo.systemUptime
         let before = engine
@@ -48,7 +49,7 @@ import WebKit
         if key == "=" {
             if let previous = lastEquals, now - previous <= 0.33 {
                 equalsTask?.cancel(); equalsTask = nil; lastEquals = nil
-                if !ai { ai = true; pages = []; page = 0; draft = ""; draftSelection = NSRange(location: 0, length: 0); syncField() }
+                if !ai { keyboard = false; ai = true; pages = []; page = 0; draft = ""; draftSelection = NSRange(location: 0, length: 0); syncField() }
                 return
             }
             lastEquals = now; equalsTask?.cancel()
@@ -72,7 +73,7 @@ import WebKit
         }
     }
     private func commitField() {
-        guard let field = inputField, field.isFirstResponder else { return }
+        guard ai, let field = inputField, field.isFirstResponder else { return }
         field.unmarkText()
         fieldChanged(field)
     }
@@ -89,7 +90,8 @@ import WebKit
         guard let field = inputField else { return }
         syncingField = true; defer { syncingField = false }
         let selection = draftSelection
-        field.text = draft
+        field.text = ai ? draft : ""
+        guard ai else { return }
         if let start = field.position(from: field.beginningOfDocument, offset: selection.location),
            let end = field.position(from: start, offset: selection.length) { field.selectedTextRange = field.textRange(from: start, to: end) }
     }
@@ -100,9 +102,17 @@ import WebKit
         pending = false; keyboard = false; ai = false; draft = ""; pages = []; page = 0; engine.clear()
         draftSelection = NSRange(location: 0, length: 0); syncField()
     }
-    func edit() { if ai && !pending { keyboard = true } }
+    func edit() { if !pending && !settings { keyboard = true } }
+    func typeDigits(_ text: String) {
+        guard !ai, keyboard, !settings, !pending, let keys = NumericTyping.keys(text) else { return }
+        for key in keys { press(key, fromKeyboard: true) }
+    }
+    func deleteDigit() {
+        guard !ai, keyboard, !settings, !pending else { return }
+        press("⌫", fromKeyboard: true)
+    }
     func swipe(_ translation: CGSize) {
-        if ai, translation.height > 35, abs(translation.height) > abs(translation.width) { keyboard = false; return }
+        if translation.height > 35, abs(translation.height) > abs(translation.width) { keyboard = false; return }
         guard ai, !pending, abs(translation.width) > 35, abs(translation.width) > abs(translation.height) else { return }
         page = min(max(0, page + (translation.width < 0 ? 1 : -1)), max(0, pages.count - 1))
     }
@@ -165,6 +175,9 @@ import WebKit
         if ProcessInfo.processInfo.arguments.contains("--calculator-connection-check") {
             await ConnectionChecks.run(); return
         }
+        if ProcessInfo.processInfo.arguments.contains("--calculator-keyboard-check") {
+            edit(); return
+        }
         if ProcessInfo.processInfo.arguments.contains("--calculator-render-check") {
             ai = true; pages = ["\\(\\displaystyle \\frac{1}{x}\\)"]; page = 0; return
         }
@@ -186,10 +199,43 @@ import WebKit
                 try? await Task.sleep(nanoseconds: 20_000_000)
             }
         }
+        var offlineSends = 0
+        syntheticResponder = { _ in offlineSends += 1; return "not-used" }
+        clear(); edit()
+        await waitUntil { self.inputField?.isFirstResponder == true && self.inputField?.keyboardType == .numberPad }
+        if let field = inputField as? CalculatorInputField {
+            check(keyboard && !ai && field.digitsOnly && field.isFirstResponder, "normal display opens native numeric keyboard")
+            field.insertText("12"); check(engine.entry == "12" && keyboard, "native keyboard digits reach calculator once and stay open")
+            for text in [".", "-", "+", "1+2", "abc", "한글", "１２", "١٢", "²", "\n"] { field.insertText(text) }
+            check(engine.entry == "12" && !ai && draft.isEmpty, "normal keyboard ignores all non-ASCII numbers and mixed insertions")
+            field.paste(nil)
+            check(engine.entry == "12" && !field.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil), "normal paste path disabled without clipboard read")
+            check(field.delegate?.textField?(field, shouldChangeCharactersIn: NSRange(location: 0, length: 0), replacementString: "3") == false && engine.entry == "123", "delegate insertion path returns false after one calculator update")
+            check(field.delegate?.textField?(field, shouldChangeCharactersIn: NSRange(location: 0, length: 0), replacementString: "x") == false && engine.entry == "123", "delegate rejects ordinary letters")
+            field.deleteBackward(); check(engine.entry == "12", "native backspace uses existing calculator deletion")
+            sendDraft(); check(offlineSends == 0 && !pending, "normal typing cannot send AI request")
+            press("+"); check(!keyboard, "calculator keypad closes numeric keyboard")
+            edit(); field.insertText("3"); press("=")
+            await waitUntil { engine.value == 15 }
+            check(engine.value == 15 && !ai, "typed operands use existing arithmetic")
+            edit(); field.insertText("4"); check(engine.entry == "4", "typing after a result starts a new operand")
+            press("."); edit(); field.insertText("5")
+            check(engine.entry == "4.5", "keypad decimal followed by keyboard digits")
+            press("±"); edit(); field.insertText("6"); check(engine.entry == "-4.56", "keypad sign preserved with typed digits")
+            field.delegate?.textFieldShouldReturn?(field)
+            check(!keyboard && engine.entry == "-4.56" && offlineSends == 0, "normal return only closes keyboard")
+            edit(); swipe(CGSize(width: 0, height: 70)); check(!keyboard, "normal downward swipe dismisses numeric keyboard")
+            clear(); edit(); field.insertText(String(repeating: "9", count: 32))
+            check(engine.entry.count == 18 && keyboard, "typed digits retain existing 18 digit limit")
+            clear(); check(!keyboard && !ai && engine.display == "0", "C closes normal keyboard and clears")
+        } else { check(false, "numeric keyboard native field mounted") }
+        syntheticResponder = nil
         clear(); press("2"); press("+"); press("3"); press("=")
         await waitUntil { engine.value == 5 }
         check(engine.value == 5, "normal equals")
         press("="); press("="); check(ai, "double equals enters")
+        await waitUntil { (self.inputField as? CalculatorInputField)?.digitsOnly == false && self.inputField?.keyboardType == .default }
+        check((inputField as? CalculatorInputField)?.digitsOnly == false && inputField?.keyboardType == .default, "AI restores ordinary text keyboard")
         press("="); press("="); check(ai, "double equals idempotent")
         let saved = engine.entry; press("7"); press("+"); press("sin"); press("3"); press("0"); press("MS"); press("DEG")
         check(engine.entry == saved && !engine.hasMemory && engine.degrees && draft == "7+sin(30)", "AI keypad edits only question")
@@ -244,7 +290,7 @@ import WebKit
         check(settings && answer == "2" && draft == "synthetic settings race", "answer arriving during settings sequence is preserved")
         settings = false
         clear(); check(!ai && engine.display == "0", "C idempotent")
-        edit(); check(!keyboard, "normal double display does not edit")
+        edit(); check(keyboard && !ai, "normal display opens numeric input without entering AI")
         press("9"); let preserved = engine.entry
         for key in CalculatorKeys.secret { press(key) }
         check(settings && engine.entry == preserved, "settings sequence restores calculation")
@@ -305,7 +351,7 @@ struct CalculatorScreen: View {
                 .frame(maxWidth: .infinity).frame(height: compact ? 90 : 128)
                 .contentShape(Rectangle())
                 .highPriorityGesture(LongPressGesture(minimumDuration: 0.6).onEnded { _ in model.paste() }
-                    .exclusively(before: TapGesture(count: 2).onEnded { model.edit() }
+                    .exclusively(before: TapGesture(count: model.ai ? 2 : 1).onEnded { model.edit() }
                         .exclusively(before: TapGesture().onEnded { model.keyboard = false })))
                 .simultaneousGesture(DragGesture(minimumDistance: 25).onEnded { model.swipe($0.translation) })
                 HStack(spacing: 18) {
@@ -354,30 +400,71 @@ struct CalculatorButtonStyle: ButtonStyle {
     }
 }
 
+final class CalculatorInputField: UITextField {
+    var digitsOnly = true
+    var numericInput: ((String) -> Void)?
+    var numericDelete: (() -> Void)?
+    override var hasText: Bool { digitsOnly ? true : super.hasText }
+    override func insertText(_ text: String) {
+        if digitsOnly { numericInput?(text) } else { super.insertText(text) }
+    }
+    override func deleteBackward() {
+        if digitsOnly { numericDelete?() } else { super.deleteBackward() }
+    }
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        digitsOnly ? false : super.canPerformAction(action, withSender: sender)
+    }
+    override func paste(_ sender: Any?) {
+        guard !digitsOnly else { return }; super.paste(sender)
+    }
+}
+
 struct SendKeyboard: UIViewRepresentable {
     @ObservedObject var model: CalculatorModel
     func makeCoordinator() -> Coordinator { Coordinator(self) }
-    func makeUIView(context: Context) -> UITextField {
-        let view = UITextField(); view.returnKeyType = .send; view.delegate = context.coordinator
+    func makeUIView(context: Context) -> CalculatorInputField {
+        let view = CalculatorInputField(); view.returnKeyType = .send; view.delegate = context.coordinator
         view.autocorrectionType = .no; view.spellCheckingType = .no; view.smartQuotesType = .no; view.smartDashesType = .no
         view.textColor = .clear; view.tintColor = .clear; view.keyboardAppearance = .dark
         view.inputAssistantItem.leadingBarButtonGroups = []; view.inputAssistantItem.trailingBarButtonGroups = []
         view.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .editingChanged)
+        view.numericInput = { [weak coordinator = context.coordinator] text in coordinator?.parent.model.typeDigits(text) }
+        view.numericDelete = { [weak coordinator = context.coordinator] in coordinator?.parent.model.deleteDigit() }
+        let toolbar = UIToolbar(); toolbar.sizeToFit()
+        toolbar.items = [UIBarButtonItem(systemItem: .flexibleSpace),
+            UIBarButtonItem(title: "완료", style: .done, target: context.coordinator, action: #selector(Coordinator.done))]
+        context.coordinator.numberToolbar = toolbar
         model.inputField = view
         return view
     }
-    func updateUIView(_ view: UITextField, context: Context) {
+    func updateUIView(_ view: CalculatorInputField, context: Context) {
         context.coordinator.parent = self
-        if view.markedTextRange == nil, view.text != model.draft { view.text = model.draft }
+        let digitsOnly = !model.ai
+        let changedMode = view.digitsOnly != digitsOnly
+        view.digitsOnly = digitsOnly
+        view.keyboardType = digitsOnly ? .numberPad : .default
+        view.returnKeyType = digitsOnly ? .done : .send
+        view.inputAccessoryView = digitsOnly ? context.coordinator.numberToolbar : nil
+        if changedMode, view.isFirstResponder { view.reloadInputViews() }
+        let text = digitsOnly ? "" : model.draft
+        if view.markedTextRange == nil, view.text != text { view.text = text }
         if model.keyboard, !view.isFirstResponder { DispatchQueue.main.async { if context.coordinator.parent.model.keyboard { view.becomeFirstResponder() } } }
         if !model.keyboard, view.isFirstResponder { view.resignFirstResponder() }
     }
     class Coordinator: NSObject, UITextFieldDelegate {
         var parent: SendKeyboard
+        var numberToolbar: UIToolbar?
         init(_ parent: SendKeyboard) { self.parent = parent }
         @objc func changed(_ field: UITextField) { parent.model.fieldChanged(field) }
+        @objc func done() { parent.model.keyboard = false }
+        func textField(_ field: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool {
+            if parent.model.ai { return !parent.model.pending }
+            if string.isEmpty { parent.model.deleteDigit() } else { parent.model.typeDigits(string) }
+            return false
+        }
         func textFieldDidChangeSelection(_ field: UITextField) { parent.model.fieldChanged(field) }
         func textFieldShouldReturn(_ field: UITextField) -> Bool {
+            guard parent.model.ai else { parent.model.keyboard = false; return false }
             field.unmarkText(); parent.model.fieldChanged(field)
             DispatchQueue.main.async { self.parent.model.sendDraft() }; return false
         }
@@ -500,7 +587,7 @@ struct ConnectionSettings: View {
                     }
                     Text("질문·사진·답변·로그인 비밀은 진단 기록에 포함하지 않습니다. 이 기록은 앱 메모리에만 남고 모델 조회로 덮어쓰지 않습니다.")
                 }.font(.footnote).textSelection(.enabled)
-                Section("앱 버전") { Text("공학용 계산기 1.0.4 · 연결 복구·모델 변경 대응") }.font(.footnote)
+                Section("앱 버전") { Text("공학용 계산기 1.0.5 · 일반 계산기 숫자 키보드") }.font(.footnote)
                 Section("사용량·개인정보") {
                     Text("AI는 ChatGPT 플랜의 사용량·한도를 공유합니다. 별도의 무료 무제한 사용권이 아닙니다. API 요금 결제나 키 입력은 하지 않습니다.")
                     Text("계정 토큰은 이 기기의 Keychain에만 저장합니다. 질문과 사진은 전송할 때 OpenAI로 직접 보냅니다. 대화는 앱 메모리에만 있으며 서버 저장은 요청하지 않습니다. 앱 자체 분석·광고·원격 로그는 없습니다.")
@@ -509,7 +596,7 @@ struct ConnectionSettings: View {
                     Link("공개 소스·검증 범위", destination: URL(string: "https://github.com/leeqmin/calculatorai-ios-probe")!)
                 }.font(.footnote)
                 Section("조작") {
-                    Text("= 두 번: AI 진입 · C: 취소하고 계산기로\nAI에서 숫자·함수 버튼: 질문에 수식 입력 · CE: 질문 비우기 · ⌫: 한 글자 지우기\nAI에서 화면 두 번: 키보드 · 길게: 텍스트/사진 붙여넣고 전송\n위쪽 작은 줄: 질문·수식 미리보기(길면 끝부분 표시)\n키보드 전송: 질문 보내기 · 화면 한 번/아래 스와이프: 키보드 닫기\n화면 좌우 스와이프: 답 넘기기\n설정: ln → n! → mod → ln (4초 이내)").font(.footnote)
+                    Text("일반 계산기 화면 한 번: 숫자 키보드(0~9만) · 완료/아래 스와이프/계산기 버튼: 키보드 닫기\n소수점·부호·연산·함수는 계산기 버튼 사용 · 일반 모드 붙여넣기 없음\n= 두 번: AI 진입 · C: 취소하고 계산기로\nAI에서 숫자·함수 버튼: 질문에 수식 입력 · CE: 질문 비우기 · ⌫: 한 글자 지우기\nAI에서 화면 두 번: 키보드 · 길게: 텍스트/사진 붙여넣고 전송\n위쪽 작은 줄: 질문·수식 미리보기(길면 끝부분 표시)\nAI 키보드 전송: 질문 보내기 · AI 화면 한 번/아래 스와이프: 키보드 닫기\nAI 화면 좌우 스와이프: 답 넘기기\n설정: ln → n! → mod → ln (4초 이내)").font(.footnote)
                 }
             }
             .navigationTitle("설정").navigationBarTitleDisplayMode(.inline)

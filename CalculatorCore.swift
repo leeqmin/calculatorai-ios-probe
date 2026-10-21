@@ -159,6 +159,16 @@ enum CalculatorKeys {
     static let secret = ["ln", "n!", "mod", "ln"]
 }
 
+enum NumericTyping {
+    // Keyboard input is deliberately ASCII 0...9 only, not Unicode isNumber.
+    // Reject an entire mixed insertion instead of extracting unintended digits.
+    static func keys(_ text: String) -> [String]? {
+        guard !text.isEmpty, text.utf8.count <= 64,
+              text.utf8.allSatisfy({ (48...57).contains($0) }) else { return nil }
+        return text.map(String.init)
+    }
+}
+
 // Shared by the native field and the calculator keypad. Selection is UIKit's
 // UTF-16 range, never a Character offset (Korean composition/emoji may differ).
 struct QuestionDraft {
