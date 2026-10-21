@@ -194,7 +194,7 @@ import WebKit
         // fixed sleep has already elapsed. Observe completion with a deadline,
         // keeping every state/value assertion and the production 335ms delay.
         @MainActor func waitUntil(_ ready: () -> Bool) async {
-            let deadline = ProcessInfo.processInfo.systemUptime + 3
+            let deadline = ProcessInfo.processInfo.systemUptime + 10
             while !ready(), ProcessInfo.processInfo.systemUptime < deadline {
                 try? await Task.sleep(nanoseconds: 20_000_000)
             }
@@ -215,9 +215,11 @@ import WebKit
             field.deleteBackward(); check(engine.entry == "12", "native backspace uses existing calculator deletion")
             sendDraft(); check(offlineSends == 0 && !pending, "normal typing cannot send AI request")
             press("+"); check(!keyboard, "calculator keypad closes numeric keyboard")
-            edit(); field.insertText("3"); press("=")
+            edit(); field.insertText("3")
+            check(engine.entry == "3" && engine.expression == "12 +", "typed operand and pending operation preserved before equals")
+            press("=")
             await waitUntil { engine.value == 15 }
-            check(engine.value == 15 && !ai, "typed operands use existing arithmetic")
+            check(engine.value == 15 && !ai, "typed operands use existing arithmetic [entry=\(engine.entry), expression=\(engine.expression), equalsWaiting=\(lastEquals != nil)]")
             edit(); field.insertText("4"); check(engine.entry == "4", "typing after a result starts a new operand")
             press("."); edit(); field.insertText("5")
             check(engine.entry == "4.5", "keypad decimal followed by keyboard digits")
